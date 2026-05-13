@@ -1,0 +1,88 @@
+# ========================================
+# 1. 操作系统与环境 (OS & Environment)
+# ========================================
+.DS_Store
+Thumbs.db
+*~
+*.swp
+
+# ========================================
+# 2. 前端栈 (Next.js / Node.js)
+# ========================================
+# 依赖包
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+
+# Next.js 编译产物
+.next/
+out/
+build/
+
+# ========================================
+# 3. 后端栈 (Python / FastAPI)
+# ========================================
+# 编译后的字节码
+__pycache__/
+*.py[cod]
+*$py.class
+
+# 虚拟环境
+venv/
+.venv/
+env/
+.env_python/
+
+# 测试与分析
+.pytest_cache/
+.coverage
+htmlcov/
+
+# ========================================
+# 4. 数据与 AI 知识库 (RAG / Vector DB)
+# ========================================
+# 原始课件和提取的缓存（避免大文件撑爆 Git 仓库）
+data/raw_slides/
+data/temp_ocr/
+
+# 本地向量数据库目录 (ChromaDB / SQLite 等)
+chroma_db/
+vector_store/
+*.sqlite3
+*.db
+
+# 本地下载的 AI 模型权重 (如果有)
+*.bin
+*.pt
+*.pth
+*.onnx
+
+# ========================================
+# 5. 安全与密钥 (Security & Credentials) - 绝对不能提交！
+# ========================================
+# 环境变量配置
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+# 允许提交模板文件，方便团队成员知道需要哪些配置
+!.env.example 
+
+# 其他密钥文件
+*.pem
+*.key
+
+# ========================================
+# 6. IDE 与编辑器 (IDE & Editors)
+# ========================================
+.idea/
+.vscode/*
+# 允许团队共享 VS Code 的推荐插件和统一配置
+!.vscode/settings.json
+!.vscode/extensions.json
+
+# 避免提交本地的 Jupyter 运行状态
+.ipynb_checkpoints/
