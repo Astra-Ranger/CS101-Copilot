@@ -1,36 +1,102 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# CS101 Static Learning Workspace
 
-## Getting Started
+This frontend is now a traditional HTML/CSS/JS prototype served by the Flask shell in `backend/`. It no longer uses Next.js, React, Zustand, Tailwind, Vercel AI SDK, or `npm run dev`.
 
-First, run the development server:
+## Current Architecture
+
+- `frontend/index.html`: three-column workspace markup.
+- `frontend/styles.css`: all layout and visual styling.
+- `frontend/app.js`: local state, course selection, slide rendering, mock chat, citation jumping, note autosave.
+- `frontend/slides-manifest.js`: temporary static course manifest while the Flask API is a shell.
+- `frontend/API.md`: full API contract expected by the frontend.
+- `backend/main.py`: Flask shell that serves the static frontend, exposes `/health`, and reserves future API paths.
+
+The backend is intentionally a shell. Business APIs currently return `501 NOT_IMPLEMENTED`; the frontend falls back to local manifest/mock behavior.
+
+## Run
+
+From the repository root:
 
 ```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+cd backend
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+python main.py
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Open:
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+```txt
+http://127.0.0.1:5001/
+http://127.0.0.1:5001/course/demo-course
+```
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+Do not run the old Next.js command:
 
-## Learn More
+```bash
+cd frontend
+npm run dev
+```
 
-To learn more about Next.js, take a look at the following resources:
+## Environment
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+Copy the root `.env.example` to `.env` if you need to change defaults:
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+```bash
+cp .env.example .env
+```
 
-## Deploy on Vercel
+Current variables:
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+```env
+FLASK_HOST=127.0.0.1
+FLASK_PORT=5001
+FLASK_DEBUG=1
+COURSE_SLIDE_ROOT=course_slide
+```
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+`COURSE_SLIDE_ROOT` is reserved for the future slide APIs. The current Flask shell does not scan it yet.
+
+## Current Frontend Behavior
+
+- The page is a 100vh three-column workspace: Slide, Chat, Notes.
+- `CS101 Copliot` is shown above the three columns.
+- The slide panel has a course selector. It tries `GET /api/courses`, then falls back to `slides-manifest.js`.
+- `demo-course` maps to `week16--计科导-16-期末复习` in the fallback manifest.
+- The slide column tries `GET /api/slides/<course_id>`, then falls back to static manifest slide paths.
+- Chat messages are mocked in the browser with `setTimeout`.
+- Citation text like `[引用第5页]` and `[第5页]` is converted into a button that scrolls the slide column to that page.
+- Notes are saved immediately to `localStorage`, then a mock autosave runs after 2 seconds and logs `笔记已保存`.
+
+## API Contract
+
+See `frontend/API.md` for the complete frontend API contract:
+
+- `GET /health`
+- `GET /api/courses`
+- `GET /api/slides/<course_id>`
+- `GET /api/slides/<course_id>/pages/<page_number>`
+- `POST /api/notes/<course_id>`
+- `POST /api/chat`
+
+## Later Backend Additions
+
+- User login/session handling.
+- Note loading endpoint.
+- Streaming AI responses.
+- Database persistence.
+- Production-safe static/media serving.
+
+## Manual Test Checklist
+
+- `/` opens the three-column workspace.
+- `/course/demo-course` opens the same workspace.
+- `/health` returns `{ "status": "ok" }`.
+- The top of the page shows `CS101 Copliot` above the three columns.
+- The left column has a selectable course list.
+- Choosing a course reloads the slide column from the API or fallback manifest.
+- Clicking `[引用第5页]` scrolls the slide column to page 5.
+- Sending a chat message creates a mock assistant reply.
+- Editing notes writes to `localStorage`.
+- Stopping note input for 2 seconds logs `笔记已保存`.
