@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>CS101 AI 学习笔记</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <header class="app-header">
+        <div class="brand-row">
+          <p class="app-title">CS101 Copliot</p>
+          <p class="app-subtitle">AI assisted course notes</p>
+        </div>
+        <div class="header-course-picker">
+          <label class="eyebrow" for="course-select">选择课件</label>
+          <select id="course-select" aria-label="选择课件"></select>
+        </div>
+      </header>
+      <main class="workspace" aria-label="AI 学习笔记工作台">
+        <div class="left-column" aria-label="课件与笔记">
+          <section class="panel slide-panel" aria-label="课件阅读器">
+            <header class="panel-header slide-header">
+              <div class="slide-title-row">
+                <p class="eyebrow">Slide</p>
+                <h1 id="slide-title">课件</h1>
+              </div>
+              <span class="page-count" id="slide-count">0 页</span>
+            </header>
+            <div class="slide-scroll" id="slide-list" tabindex="0"></div>
+          </section>
+
+          <section class="panel notes-panel" aria-label="课程笔记">
+            <header class="panel-header">
+              <div class="panel-title-row">
+                <p class="eyebrow">Notes</p>
+                <h2>课程笔记</h2>
+              </div>
+              <span class="save-state" id="save-state">未保存</span>
+            </header>
+            <textarea
+              id="note-editor"
+              spellcheck="false"
+              placeholder="记录你的理解、问题和复习线索"
+            ></textarea>
+          </section>
+        </div>
+
+        <section class="panel chat-panel" aria-label="AI 对话">
+          <header class="panel-header">
+            <div class="panel-title-row">
+              <p class="eyebrow">AI Chat</p>
+              <h2>学习助手</h2>
+            </div>
+          </header>
+          <div class="message-list" id="message-list" aria-live="polite"></div>
+          <form class="chat-form" id="chat-form">
+            <textarea
+              id="chat-input"
+              rows="1"
+              spellcheck="false"
+              placeholder="向 AI 提问"
+            ></textarea>
+            <button id="chat-submit" type="submit">发送</button>
+          </form>
+        </section>
+      </main>
+    </div>
+
+    <script src="/slides-manifest.js"></script>
+    <script src="/app.js"></script>
+  </body>
+</html>
