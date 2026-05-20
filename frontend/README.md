@@ -4,7 +4,7 @@ This frontend is now a traditional HTML/CSS/JS prototype served by the Flask she
 
 ## Current Architecture
 
-- `frontend/index.html`: three-column workspace markup.
+- `frontend/index.html`: two-column workspace markup. The left column is split into Slide and Notes, and the right column is Chat.
 - `frontend/styles.css`: all layout and visual styling.
 - `frontend/app.js`: local state, course selection, slide rendering, mock chat, citation jumping, note autosave.
 - `frontend/slides-manifest.js`: temporary static course manifest while the Flask API is a shell.
@@ -60,9 +60,9 @@ COURSE_SLIDE_ROOT=course_slide
 
 ## Current Frontend Behavior
 
-- The page is a 100vh three-column workspace: Slide, Chat, Notes.
-- `CS101 Copliot` is shown above the three columns.
-- The slide panel has a course selector. It tries `GET /api/courses`, then falls back to `slides-manifest.js`.
+- The page is a 100vh two-column workspace: Slide and Notes are stacked on the left, Chat is on the right.
+- `CS101 Copliot` is shown above the workspace.
+- The top-right course selector tries `GET /api/courses`, then falls back to `slides-manifest.js`.
 - `demo-course` maps to `week16--计科导-16-期末复习` in the fallback manifest.
 - The slide column tries `GET /api/slides/<course_id>`, then falls back to static manifest slide paths.
 - Chat messages are mocked in the browser with `setTimeout`.
@@ -90,11 +90,11 @@ See `frontend/API.md` for the complete frontend API contract:
 
 ## Manual Test Checklist
 
-- `/` opens the three-column workspace.
+- `/` opens the two-column workspace.
 - `/course/demo-course` opens the same workspace.
 - `/health` returns `{ "status": "ok" }`.
-- The top of the page shows `CS101 Copliot` above the three columns.
-- The left column has a selectable course list.
+- The top of the page shows `CS101 Copliot` above the workspace.
+- The top-right header has a selectable course list.
 - Choosing a course reloads the slide column from the API or fallback manifest.
 - Clicking `[引用第5页]` scrolls the slide column to page 5.
 - Sending a chat message creates a mock assistant reply.
