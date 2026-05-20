@@ -37,7 +37,27 @@
                 <p class="eyebrow">Notes</p>
                 <h2>课程笔记</h2>
               </div>
-              <span class="save-state" id="save-state">未保存</span>
+              <div class="note-save-controls">
+                <div class="save-mode-toggle" aria-label="笔记保存模式">
+                  <button
+                    id="auto-save-mode"
+                    type="button"
+                    class="active"
+                    data-save-mode="auto"
+                  >
+                    自动
+                  </button>
+                  <button
+                    id="manual-save-mode"
+                    type="button"
+                    data-save-mode="manual"
+                  >
+                    手动
+                  </button>
+                </div>
+                <button id="manual-save-button" type="button" hidden>保存</button>
+                <span class="save-state" id="save-state">未保存</span>
+              </div>
             </header>
             <textarea
               id="note-editor"

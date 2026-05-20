@@ -190,18 +190,71 @@ textarea {
   font-size: 12px;
 }
 
+.note-save-controls {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 8px;
+}
+
+.save-mode-toggle {
+  display: inline-flex;
+  overflow: hidden;
+  border: 1px solid var(--panel-border);
+  border-radius: 6px;
+  background: #fff;
+}
+
+.save-mode-toggle button,
+#manual-save-button {
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  padding: 5px 8px;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.save-mode-toggle button.active {
+  background: #18181b;
+  color: #fff;
+}
+
+#manual-save-button {
+  border-radius: 6px;
+  background: var(--accent);
+  color: #fff;
+}
+
+#manual-save-button:disabled {
+  cursor: not-allowed;
+  background: #d4d4d8;
+}
+
 .slide-scroll {
   min-height: 0;
   flex: 1;
-  overflow-y: auto;
+  overflow: auto;
   padding: 16px;
   scroll-behavior: smooth;
+  touch-action: none;
+  overscroll-behavior: contain;
 }
 
 .slide-stack {
   display: flex;
+  width: 100%;
+  min-width: 100%;
   flex-direction: column;
   gap: 20px;
+  transform-origin: 0 0;
+}
+
+.slide-scroll.is-pinching {
+  cursor: zoom-in;
+  scroll-behavior: auto;
 }
 
 .slide-card {
@@ -389,6 +442,16 @@ textarea {
 
   #course-select {
     width: min(100%, 320px);
+  }
+
+  .notes-panel .panel-header {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .note-save-controls {
+    width: 100%;
+    flex-wrap: wrap;
   }
 
   .workspace {
