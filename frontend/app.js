@@ -8,6 +8,8 @@
   const state = {
     currentCourseId: getInitialCourseId(),
     activeSlidePage: 1,
+    slideZoom: 1,
+    pinch: null,
     noteContent: "",
     courseIndex: {
       aliases: staticManifest.aliases || {},
@@ -24,6 +26,8 @@
     ],
     isSending: false,
     saveTimer: null,
+    saveMode: getInitialSaveMode(),
+    hasUnsavedNote: false,
   };
 
   const elements = {
@@ -37,7 +41,15 @@
     chatSubmit: document.querySelector("#chat-submit"),
     noteEditor: document.querySelector("#note-editor"),
     saveState: document.querySelector("#save-state"),
+    autoSaveMode: document.querySelector("#auto-save-mode"),
+    manualSaveMode: document.querySelector("#manual-save-mode"),
+    manualSaveButton: document.querySelector("#manual-save-button"),
   };
+
+  const slidePointers = new Map();
+  const MIN_SLIDE_ZOOM = 1;
+  const MAX_SLIDE_ZOOM = 2.6;
+  const SLIDE_WHEEL_ZOOM_STEP = 0.08;
 
   function getInitialCourseId() {
     const url = new URL(window.location.href);
@@ -60,6 +72,12 @@
     }
 
     return "demo-course";
+  }
+
+  function getInitialSaveMode() {
+    return window.localStorage.getItem("cs101-note-save-mode") === "manual"
+      ? "manual"
+      : "auto";
   }
 
   function resolveCourseId(courseId) {
@@ -151,11 +169,32 @@
   function renderCourseSelect() {
     elements.courseSelect.innerHTML = "";
 
-    state.courseIndex.courses.forEach((course) => {
-      const option = document.createElement("option");
-      option.value = course.id;
-      option.textContent = course.title;
-      elements.courseSelect.append(option);
+    const categoryOrder = [
+      ["lecture", "计科导"],
+      ["lab", "实验"],
+      ["supplement", "补充材料"],
+    ];
+
+    categoryOrder.forEach(([category, label]) => {
+      const courses = state.courseIndex.courses.filter(
+        (course) => (course.category || "lecture") === category,
+      );
+
+      if (!courses.length) {
+        return;
+      }
+
+      const group = document.createElement("optgroup");
+      group.label = label;
+
+      courses.forEach((course) => {
+        const option = document.createElement("option");
+        option.value = course.id;
+        option.textContent = course.title;
+        group.append(option);
+      });
+
+      elements.courseSelect.append(group);
     });
 
     const selectedCourse = getCourseSummary(state.currentCourseId);
@@ -222,7 +261,131 @@
     });
 
     elements.slideList.append(stack);
+    applySlideZoom();
     setActiveSlidePage(state.activeSlidePage);
+  }
+
+  function clampSlideZoom(value) {
+    return Math.min(MAX_SLIDE_ZOOM, Math.max(MIN_SLIDE_ZOOM, value));
+  }
+
+  function getSlideStack() {
+    return elements.slideList.querySelector(".slide-stack");
+  }
+
+  function applySlideZoom() {
+    const stack = getSlideStack();
+
+    if (!stack) {
+      return;
+    }
+
+    stack.style.width = `${state.slideZoom * 100}%`;
+  }
+
+  function getDistance(pointA, pointB) {
+    return Math.hypot(
+      pointA.clientX - pointB.clientX,
+      pointA.clientY - pointB.clientY,
+    );
+  }
+
+  function getMidpoint(pointA, pointB) {
+    return {
+      clientX: (pointA.clientX + pointB.clientX) / 2,
+      clientY: (pointA.clientY + pointB.clientY) / 2,
+    };
+  }
+
+  function zoomSlides(nextZoom, anchorPoint) {
+    const previousZoom = state.slideZoom;
+    const zoom = clampSlideZoom(nextZoom);
+
+    if (Math.abs(zoom - previousZoom) < 0.001) {
+      return;
+    }
+
+    const rect = elements.slideList.getBoundingClientRect();
+    const anchorX = anchorPoint ? anchorPoint.clientX - rect.left : rect.width / 2;
+    const anchorY = anchorPoint ? anchorPoint.clientY - rect.top : rect.height / 2;
+    const contentX = elements.slideList.scrollLeft + anchorX;
+    const contentY = elements.slideList.scrollTop + anchorY;
+
+    state.slideZoom = zoom;
+    applySlideZoom();
+
+    const scale = zoom / previousZoom;
+    elements.slideList.scrollLeft = contentX * scale - anchorX;
+    elements.slideList.scrollTop = contentY * scale - anchorY;
+  }
+
+  function handleSlidePointerDown(event) {
+    if (event.pointerType !== "touch") {
+      return;
+    }
+
+    slidePointers.set(event.pointerId, event);
+
+    if (slidePointers.size === 2) {
+      const [pointA, pointB] = [...slidePointers.values()];
+      state.pinch = {
+        distance: getDistance(pointA, pointB),
+        zoom: state.slideZoom,
+      };
+      elements.slideList.classList.add("is-pinching");
+    }
+  }
+
+  function handleSlidePointerMove(event) {
+    if (!slidePointers.has(event.pointerId)) {
+      return;
+    }
+
+    slidePointers.set(event.pointerId, event);
+
+    if (slidePointers.size !== 2 || !state.pinch) {
+      return;
+    }
+
+    event.preventDefault();
+
+    const [pointA, pointB] = [...slidePointers.values()];
+    const distance = getDistance(pointA, pointB);
+
+    if (!state.pinch.distance) {
+      return;
+    }
+
+    zoomSlides(
+      state.pinch.zoom * (distance / state.pinch.distance),
+      getMidpoint(pointA, pointB),
+    );
+  }
+
+  function handleSlidePointerEnd(event) {
+    slidePointers.delete(event.pointerId);
+
+    if (slidePointers.size < 2) {
+      state.pinch = null;
+      elements.slideList.classList.remove("is-pinching");
+    }
+  }
+
+  function handleSlideWheel(event) {
+    if (!event.ctrlKey) {
+      return;
+    }
+
+    event.preventDefault();
+
+    const direction = event.deltaY < 0 ? 1 : -1;
+    zoomSlides(
+      state.slideZoom + direction * SLIDE_WHEEL_ZOOM_STEP,
+      {
+        clientX: event.clientX,
+        clientY: event.clientY,
+      },
+    );
   }
 
   function createImageFallback(pageNumber) {
@@ -317,15 +480,32 @@
     });
   }
 
-  function mockSaveUserNote(courseId, content) {
-    void courseId;
-    void content;
-
-    return new Promise((resolve) => {
-      window.setTimeout(() => {
-        resolve({ success: true, savedAt: new Date().toISOString() });
-      }, 700);
+  async function fetchCourseNote(courseId) {
+    const response = await fetch(`/api/notes/${encodeURIComponent(courseId)}`, {
+      cache: "no-store",
     });
+
+    if (!response.ok) {
+      throw new Error("note api unavailable");
+    }
+
+    return response.json();
+  }
+
+  async function saveUserNote(courseId, content) {
+    const response = await fetch(`/api/notes/${encodeURIComponent(courseId)}`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ content }),
+    });
+
+    if (!response.ok) {
+      throw new Error("note save api unavailable");
+    }
+
+    return response.json();
   }
 
   async function handleCourseChange(event) {
@@ -336,7 +516,7 @@
       "",
       `/course/${encodeURIComponent(state.currentCourseId)}`,
     );
-    initNotes();
+    await initNotes();
     await loadCurrentCourse();
   }
 
@@ -409,46 +589,155 @@
     elements.saveState.classList.toggle("error", Boolean(isError));
   }
 
-  function handleNoteInput(event) {
-    state.noteContent = event.target.value;
-    window.localStorage.setItem(getStorageKey(), state.noteContent);
-    updateSaveState("未保存", false);
+  function renderSaveMode() {
+    const isManual = state.saveMode === "manual";
 
+    elements.autoSaveMode.classList.toggle("active", !isManual);
+    elements.manualSaveMode.classList.toggle("active", isManual);
+    elements.manualSaveButton.hidden = !isManual;
+    elements.manualSaveButton.disabled = !state.hasUnsavedNote;
+  }
+
+  function setSaveMode(mode) {
+    state.saveMode = mode === "manual" ? "manual" : "auto";
+    window.localStorage.setItem("cs101-note-save-mode", state.saveMode);
+
+    if (state.saveTimer) {
+      window.clearTimeout(state.saveTimer);
+      state.saveTimer = null;
+    }
+
+    renderSaveMode();
+
+    if (state.saveMode === "auto" && state.hasUnsavedNote) {
+      scheduleAutoSaveNote();
+    }
+  }
+
+  async function saveCurrentNote() {
+    const courseId = state.currentCourseId;
+    const content = state.noteContent;
+
+    if (state.saveTimer) {
+      window.clearTimeout(state.saveTimer);
+      state.saveTimer = null;
+    }
+
+    updateSaveState("保存中", false);
+    elements.manualSaveButton.disabled = true;
+
+    try {
+      await saveUserNote(courseId, content);
+      console.log("笔记已保存");
+
+      if (courseId === state.currentCourseId) {
+        state.hasUnsavedNote = false;
+        updateSaveState("已保存", false);
+        renderSaveMode();
+      }
+    } catch (error) {
+      console.error(error);
+
+      if (courseId === state.currentCourseId) {
+        state.hasUnsavedNote = true;
+        updateSaveState("保存失败", true);
+        renderSaveMode();
+      }
+    }
+  }
+
+  function scheduleAutoSaveNote() {
     if (state.saveTimer) {
       window.clearTimeout(state.saveTimer);
     }
 
-    state.saveTimer = window.setTimeout(async () => {
-      updateSaveState("保存中", false);
-
-      try {
-        await mockSaveUserNote(state.currentCourseId, state.noteContent);
-        console.log("笔记已保存");
-        updateSaveState("已保存", false);
-      } catch (error) {
-        console.error(error);
-        updateSaveState("保存失败", true);
-      }
+    state.saveTimer = window.setTimeout(() => {
+      void saveCurrentNote();
     }, 2000);
   }
 
-  function initNotes() {
-    state.noteContent = window.localStorage.getItem(getStorageKey()) || "";
-    elements.noteEditor.value = state.noteContent;
+  function handleNoteInput(event) {
+    state.noteContent = event.target.value;
+    window.localStorage.setItem(getStorageKey(), state.noteContent);
+    state.hasUnsavedNote = true;
     updateSaveState("未保存", false);
+    renderSaveMode();
+
+    if (state.saveTimer) {
+      window.clearTimeout(state.saveTimer);
+      state.saveTimer = null;
+    }
+
+    if (state.saveMode === "auto") {
+      scheduleAutoSaveNote();
+    }
+  }
+
+  function handleSaveModeClick(event) {
+    const mode = event.currentTarget.dataset.saveMode;
+    setSaveMode(mode);
+  }
+
+  function handleManualSaveClick() {
+    void saveCurrentNote();
+  }
+
+  async function initNotes() {
+    if (state.saveTimer) {
+      window.clearTimeout(state.saveTimer);
+      state.saveTimer = null;
+    }
+
+    const storageKey = getStorageKey();
+    const localNote = window.localStorage.getItem(storageKey) || "";
+    state.noteContent = localNote;
+    elements.noteEditor.value = localNote;
+    updateSaveState("读取中", false);
+
+    try {
+      const note = await fetchCourseNote(state.currentCourseId);
+      const hasServerNote = Boolean(note.savedAt);
+
+      if (hasServerNote) {
+        state.noteContent = note.content || "";
+        elements.noteEditor.value = state.noteContent;
+        window.localStorage.setItem(storageKey, state.noteContent);
+        state.hasUnsavedNote = false;
+        updateSaveState("已保存", false);
+      } else {
+        state.hasUnsavedNote = Boolean(localNote);
+        updateSaveState(localNote ? "本地草稿" : "未保存", false);
+      }
+    } catch (error) {
+      console.warn("使用本地笔记作为回退。", error);
+      state.hasUnsavedNote = Boolean(localNote);
+      updateSaveState(localNote ? "本地草稿" : "未保存", false);
+    }
+
+    renderSaveMode();
   }
 
   async function init() {
-    initNotes();
     renderMessages();
     resizeChatInput();
     elements.chatForm.addEventListener("submit", handleChatSubmit);
     elements.chatInput.addEventListener("input", handleChatInput);
     elements.chatInput.addEventListener("keydown", handleChatKeydown);
+    elements.slideList.addEventListener("pointerdown", handleSlidePointerDown);
+    elements.slideList.addEventListener("pointermove", handleSlidePointerMove);
+    elements.slideList.addEventListener("pointerup", handleSlidePointerEnd);
+    elements.slideList.addEventListener("pointercancel", handleSlidePointerEnd);
+    elements.slideList.addEventListener("wheel", handleSlideWheel, {
+      passive: false,
+    });
+    elements.autoSaveMode.addEventListener("click", handleSaveModeClick);
+    elements.manualSaveMode.addEventListener("click", handleSaveModeClick);
+    elements.manualSaveButton.addEventListener("click", handleManualSaveClick);
     elements.noteEditor.addEventListener("input", handleNoteInput);
     elements.courseSelect.addEventListener("change", handleCourseChange);
     await fetchCourseIndex();
     renderCourseSelect();
+    await initNotes();
     await loadCurrentCourse();
   }
 

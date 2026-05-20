@@ -1,17 +1,18 @@
 # CS101 Static Learning Workspace
 
-This frontend is now a traditional HTML/CSS/JS prototype served by the Flask shell in `backend/`. It no longer uses Next.js, React, Zustand, Tailwind, Vercel AI SDK, or `npm run dev`.
+This frontend is now a traditional HTML/CSS/JS prototype served by the Flask app in `backend/`. It no longer uses Next.js, React, Zustand, Tailwind, Vercel AI SDK, or `npm run dev`.
 
 ## Current Architecture
 
 - `frontend/index.html`: two-column workspace markup. The left column is split into Slide and Notes, and the right column is Chat.
 - `frontend/styles.css`: all layout and visual styling.
 - `frontend/app.js`: local state, course selection, slide rendering, mock chat, citation jumping, note autosave.
-- `frontend/slides-manifest.js`: temporary static course manifest while the Flask API is a shell.
-- `frontend/API.md`: full API contract expected by the frontend.
-- `backend/main.py`: Flask shell that serves the static frontend, exposes `/health`, and reserves future API paths.
+- `frontend/slides-manifest.js`: tiny fallback manifest used only if the slide APIs are unavailable.
+- `backend/main.py`: Flask app that serves the static frontend, exposes `/health`, and provides slide catalog APIs.
+- `docker_1.py`: scans `course_slide/<week>/<deck>/page_###.webp` and builds course/slide metadata.
+- `backend/user_notes.json`: local single-user note store created on first note save.
 
-The backend is intentionally a shell. Business APIs currently return `501 NOT_IMPLEMENTED`; the frontend falls back to local manifest/mock behavior.
+The slide APIs now read from the real `course_slide` directory. Notes are saved by the Flask backend. Chat still uses local/mock behavior.
 
 ## Run
 
@@ -54,24 +55,24 @@ FLASK_HOST=127.0.0.1
 FLASK_PORT=5001
 FLASK_DEBUG=1
 COURSE_SLIDE_ROOT=course_slide
+COURSE_NOTES_PATH=backend/user_notes.json
 ```
 
-`COURSE_SLIDE_ROOT` is reserved for the future slide APIs. The current Flask shell does not scan it yet.
+`COURSE_SLIDE_ROOT` controls which slide directory the Flask APIs scan.
+`COURSE_NOTES_PATH` controls where the local notes JSON file is stored.
 
 ## Current Frontend Behavior
 
 - The page is a 100vh two-column workspace: Slide and Notes are stacked on the left, Chat is on the right.
 - `CS101 Copliot` is shown above the workspace.
 - The top-right course selector tries `GET /api/courses`, then falls back to `slides-manifest.js`.
-- `demo-course` maps to `week16--计科导-16-期末复习` in the fallback manifest.
+- `demo-course` maps to the detected `week16` review deck from the Flask API.
 - The slide column tries `GET /api/slides/<course_id>`, then falls back to static manifest slide paths.
 - Chat messages are mocked in the browser with `setTimeout`.
 - Citation text like `[引用第5页]` and `[第5页]` is converted into a button that scrolls the slide column to that page.
-- Notes are saved immediately to `localStorage`, then a mock autosave runs after 2 seconds and logs `笔记已保存`.
+- Notes are saved immediately to `localStorage`. In auto mode they are saved to `POST /api/notes/<course_id>` after 2 seconds; in manual mode the user clicks `保存`.
 
 ## API Contract
-
-See `frontend/API.md` for the complete frontend API contract:
 
 - `GET /health`
 - `GET /api/courses`

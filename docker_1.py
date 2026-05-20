@@ -9,6 +9,11 @@ from urllib.parse import quote
 PROJECT_ROOT = Path(__file__).resolve().parent
 DEFAULT_SLIDE_ROOT = PROJECT_ROOT / "course_slide"
 PAGE_FILE_RE = re.compile(r"^page_(\d{3})\.webp$", re.IGNORECASE)
+COURSE_CATEGORIES = {
+    "lecture": "计科导",
+    "lab": "实验",
+    "supplement": "补充材料",
+}
 
 
 class SlideCatalogError(Exception):
@@ -71,6 +76,16 @@ def page_files(deck_dir: Path):
     return sorted(pages, key=lambda item: item[0])
 
 
+def categorize_course(title: str) -> str:
+    if title.startswith("实验-"):
+        return "lab"
+
+    if "补充材料" in title:
+        return "supplement"
+
+    return "lecture"
+
+
 def scan_courses(slide_root: Optional[Path] = None):
     root = get_slide_root(slide_root)
     courses = []
@@ -96,6 +111,7 @@ def scan_courses(slide_root: Optional[Path] = None):
                     "id": course_id,
                     "week": week_dir.name,
                     "title": deck_dir.name,
+                    "category": categorize_course(deck_dir.name),
                     "pageCount": len(pages),
                     "pathSegments": list(relative_parts),
                     "_deckDir": deck_dir,
@@ -111,6 +127,8 @@ def strip_private_fields(course):
         "id": course["id"],
         "week": course["week"],
         "title": course["title"],
+        "category": course["category"],
+        "categoryLabel": COURSE_CATEGORIES[course["category"]],
         "pageCount": course["pageCount"],
         "pathSegments": course["pathSegments"],
     }
@@ -171,6 +189,8 @@ def build_course_deck(course_id: str, slide_root: Optional[Path] = None):
         "resolvedCourseId": resolved_course_id,
         "week": course["week"],
         "title": course["title"],
+        "category": course["category"],
+        "categoryLabel": COURSE_CATEGORIES[course["category"]],
         "slides": slides,
     }
 
