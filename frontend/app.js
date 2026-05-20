@@ -166,15 +166,8 @@
   }
 
   function setActiveSlidePage(pageNumber) {
-    const normalizedPage = Math.max(1, Math.floor(Number(pageNumber) || 1));
+    const normalizedPage = clampSlidePage(pageNumber);
     state.activeSlidePage = normalizedPage;
-
-    document.querySelectorAll(".slide-card").forEach((slideCard) => {
-      slideCard.classList.toggle(
-        "active",
-        Number(slideCard.dataset.pageNumber) === normalizedPage,
-      );
-    });
 
     const target = document.querySelector(
       `[data-page-number="${normalizedPage}"]`,
@@ -183,6 +176,13 @@
     if (target) {
       target.scrollIntoView({ behavior: "smooth", block: "start" });
     }
+  }
+
+  function clampSlidePage(pageNumber) {
+    const maxPage = state.currentDeck ? state.currentDeck.slides.length : 1;
+    const normalizedPage = Math.max(1, Math.floor(Number(pageNumber) || 1));
+
+    return Math.min(normalizedPage, maxPage);
   }
 
   function renderSlides() {
@@ -198,6 +198,7 @@
 
     elements.slideTitle.textContent = deck.title;
     elements.slideCount.textContent = `${deck.slides.length} 页`;
+    state.activeSlidePage = clampSlidePage(state.activeSlidePage);
     elements.slideList.innerHTML = "";
 
     const stack = document.createElement("div");
@@ -208,10 +209,6 @@
       card.className = "slide-card";
       card.dataset.pageNumber = String(slide.pageNumber);
 
-      const meta = document.createElement("div");
-      meta.className = "slide-meta";
-      meta.innerHTML = `<span>${slide.title}</span><span>${slide.pageNumber}</span>`;
-
       const image = document.createElement("img");
       image.src = slide.imageUrl;
       image.alt = `${deck.title} ${slide.title}`;
@@ -220,7 +217,7 @@
         image.replaceWith(createImageFallback(slide.pageNumber));
       };
 
-      card.append(meta, image);
+      card.append(image);
       stack.append(card);
     });
 
@@ -369,6 +366,7 @@
     state.messages.push(userMessage);
     state.isSending = true;
     elements.chatInput.value = "";
+    resizeChatInput();
     elements.chatSubmit.disabled = true;
     renderMessages();
 
@@ -384,6 +382,26 @@
       elements.chatSubmit.disabled = false;
       renderMessages();
     }
+  }
+
+  function resizeChatInput() {
+    elements.chatInput.style.height = "auto";
+    elements.chatInput.style.height = `${elements.chatInput.scrollHeight}px`;
+    elements.chatInput.style.overflowY =
+      elements.chatInput.scrollHeight > 132 ? "auto" : "hidden";
+  }
+
+  function handleChatInput() {
+    resizeChatInput();
+  }
+
+  function handleChatKeydown(event) {
+    if (event.key !== "Enter" || event.shiftKey || event.isComposing) {
+      return;
+    }
+
+    event.preventDefault();
+    elements.chatForm.requestSubmit();
   }
 
   function updateSaveState(label, isError) {
@@ -423,7 +441,10 @@
   async function init() {
     initNotes();
     renderMessages();
+    resizeChatInput();
     elements.chatForm.addEventListener("submit", handleChatSubmit);
+    elements.chatInput.addEventListener("input", handleChatInput);
+    elements.chatInput.addEventListener("keydown", handleChatKeydown);
     elements.noteEditor.addEventListener("input", handleNoteInput);
     elements.courseSelect.addEventListener("change", handleCourseChange);
     await fetchCourseIndex();
