@@ -32,6 +32,7 @@ __pycache__/
 # 虚拟环境
 venv/
 .venv/
+.venv-data-pipeline/
 env/
 .env_python/
 
@@ -47,8 +48,7 @@ htmlcov/
 *.pdf
 *.docx
 
-# 本地向量数据库目录 (ChromaDB / SQLite 等)
-chroma_db/
+# 本地向量数据库目录 (SQLite 等)
 vector_store/
 *.sqlite3
 *.db
@@ -58,6 +58,10 @@ vector_store/
 *.pt
 *.pth
 *.onnx
+
+# ChromaDB 是本项目需要提交的课程向量索引与真实数据
+!chroma_db/
+!chroma_db/**
 
 # ========================================
 # 5. 安全与密钥 (Security & Credentials) - 绝对不能提交！
