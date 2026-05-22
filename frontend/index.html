@@ -68,12 +68,41 @@
         </div>
 
         <section class="panel chat-panel" aria-label="AI 对话">
-          <header class="panel-header">
+          <header class="panel-header chat-header">
             <div class="panel-title-row">
-              <p class="eyebrow">AI Chat</p>
+              <p class="eyebrow">Copliot</p>
               <h2>学习助手</h2>
             </div>
+            <div class="chat-header-actions">
+              <button
+                id="new-chat-button"
+                class="chat-icon-button"
+                type="button"
+                aria-label="新建对话"
+                data-tooltip="新建对话"
+              >
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <circle cx="12" cy="12" r="9"></circle>
+                  <path d="M12 8v8"></path>
+                  <path d="M8 12h8"></path>
+                </svg>
+              </button>
+              <button
+                id="chat-history-button"
+                class="chat-icon-button"
+                type="button"
+                aria-label="历史对话"
+                data-tooltip="历史对话"
+              >
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="M3 12a9 9 0 1 0 3-6.7"></path>
+                  <path d="M3 4v6h6"></path>
+                  <path d="M12 7v5l3 2"></path>
+                </svg>
+              </button>
+            </div>
           </header>
+          <div class="chat-history-menu" id="chat-history-menu" hidden></div>
           <div class="message-list" id="message-list" aria-live="polite"></div>
           <form class="chat-form" id="chat-form">
             <textarea

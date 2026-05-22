@@ -1,5 +1,5 @@
 (function () {
-  const citationPattern = /\[(?:引用)?第(\d+)页\]/g;
+  const citationPattern = /【([^】]+)】/g;
   const staticManifest = window.COURSE_SLIDES_MANIFEST || {
     aliases: {},
     courses: [],
@@ -16,15 +16,19 @@
       courses: staticManifest.courses || [],
     },
     currentDeck: null,
-    messages: [
-      {
-        id: "assistant-welcome",
-        role: "assistant",
-        content:
-          "我已经载入这份课件。你可以先从核心概念页开始看 [引用第5页]，再对照总结页复习 [引用第12页]。",
-      },
-    ],
+    messages: defaultChatMessages(),
+    activeConversationId: null,
+    conversations: [],
+    isHistoryOpen: false,
+    isStartingConversation: false,
+    starterStatus: "",
     isSending: false,
+    pendingStatus: "",
+    pendingStatusSince: 0,
+    pendingStatusTimer: null,
+    pendingMessageId: null,
+    hasAssistantToken: false,
+    lastChatMetadata: null,
     saveTimer: null,
     saveMode: getInitialSaveMode(),
     hasUnsavedNote: false,
@@ -39,6 +43,9 @@
     chatForm: document.querySelector("#chat-form"),
     chatInput: document.querySelector("#chat-input"),
     chatSubmit: document.querySelector("#chat-submit"),
+    newChatButton: document.querySelector("#new-chat-button"),
+    chatHistoryButton: document.querySelector("#chat-history-button"),
+    chatHistoryMenu: document.querySelector("#chat-history-menu"),
     noteEditor: document.querySelector("#note-editor"),
     saveState: document.querySelector("#save-state"),
     autoSaveMode: document.querySelector("#auto-save-mode"),
@@ -50,6 +57,7 @@
   const MIN_SLIDE_ZOOM = 1;
   const MAX_SLIDE_ZOOM = 2.6;
   const SLIDE_WHEEL_ZOOM_STEP = 0.08;
+  const STATUS_MIN_VISIBLE_MS = 500;
 
   function getInitialCourseId() {
     const url = new URL(window.location.href);
@@ -78,6 +86,10 @@
     return window.localStorage.getItem("cs101-note-save-mode") === "manual"
       ? "manual"
       : "auto";
+  }
+
+  function defaultChatMessages() {
+    return [];
   }
 
   function resolveCourseId(courseId) {
@@ -166,6 +178,106 @@
     }
   }
 
+  async function fetchChatConversations(courseId) {
+    const params = new URLSearchParams({ courseId });
+    const response = await fetch(`/api/chat/conversations?${params.toString()}`, {
+      cache: "no-store",
+    });
+
+    if (!response.ok) {
+      throw new Error("conversation list api unavailable");
+    }
+
+    return response.json();
+  }
+
+  async function createChatConversation(courseId) {
+    const response = await fetch("/api/chat/conversations", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ courseId }),
+    });
+
+    if (!response.ok) {
+      throw new Error("conversation create api unavailable");
+    }
+
+    return response.json();
+  }
+
+  async function createChatConversationStream(courseId, handleEvent) {
+    const response = await fetch("/api/chat/conversations/stream", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ courseId }),
+    });
+
+    if (!response.ok) {
+      throw new Error("conversation stream api unavailable");
+    }
+
+    await readSseStream(response, handleEvent);
+  }
+
+  async function fetchChatConversation(conversationId) {
+    const response = await fetch(
+      `/api/chat/conversations/${encodeURIComponent(conversationId)}`,
+      { cache: "no-store" },
+    );
+
+    if (!response.ok) {
+      throw new Error("conversation api unavailable");
+    }
+
+    return response.json();
+  }
+
+  async function deleteChatConversation(conversationId) {
+    const response = await fetch(
+      `/api/chat/conversations/${encodeURIComponent(conversationId)}`,
+      {
+        method: "DELETE",
+      },
+    );
+
+    if (!response.ok) {
+      throw new Error("conversation delete api unavailable");
+    }
+
+    return response.json();
+  }
+
+  async function saveChatConversation(conversationId, messages) {
+    const response = await fetch(
+      `/api/chat/conversations/${encodeURIComponent(conversationId)}`,
+      {
+        method: "PUT",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          courseId: state.currentCourseId,
+          messages: messages.map((message) => ({
+            id: message.id,
+            role: message.role,
+            content: message.content,
+            citations: message.citations || [],
+          })),
+        }),
+      },
+    );
+
+    if (!response.ok) {
+      throw new Error("conversation save api unavailable");
+    }
+
+    return response.json();
+  }
+
   function renderCourseSelect() {
     elements.courseSelect.innerHTML = "";
 
@@ -215,6 +327,36 @@
     if (target) {
       target.scrollIntoView({ behavior: "smooth", block: "start" });
     }
+  }
+
+  function getCurrentVisibleSlidePage() {
+    const cards = [...elements.slideList.querySelectorAll("[data-page-number]")];
+
+    if (!cards.length) {
+      return state.activeSlidePage;
+    }
+
+    const containerRect = elements.slideList.getBoundingClientRect();
+    let bestPage = state.activeSlidePage;
+    let bestDistance = Number.POSITIVE_INFINITY;
+
+    cards.forEach((card) => {
+      const rect = card.getBoundingClientRect();
+
+      if (rect.bottom < containerRect.top || rect.top > containerRect.bottom) {
+        return;
+      }
+
+      const distance = Math.abs(rect.top - containerRect.top);
+
+      if (distance < bestDistance) {
+        bestDistance = distance;
+        bestPage = Number(card.dataset.pageNumber) || bestPage;
+      }
+    });
+
+    state.activeSlidePage = clampSlidePage(bestPage);
+    return state.activeSlidePage;
   }
 
   function clampSlidePage(pageNumber) {
@@ -395,20 +537,143 @@
     return fallback;
   }
 
-  function appendTextWithCitations(container, text) {
+  function appendTextWithCitations(container, text, citationDisplayMap) {
     let lastIndex = 0;
 
     for (const match of text.matchAll(citationPattern)) {
       const citation = match[0];
-      const pageNumber = Number(match[1]);
+      const target = parseCitationTarget(match[1]);
       const index = match.index || 0;
 
       appendPlainText(container, text.slice(lastIndex, index));
-      container.append(createCitationButton(citation, pageNumber));
+      if (target) {
+        const display = getCitationDisplay(citationDisplayMap, target, citation);
+        container.append(
+          createCitationButton({
+            label: citation,
+            displayNumber: display.number,
+            courseId: target.courseId,
+            pageNumber: target.page,
+          }),
+        );
+      } else {
+        appendPlainText(container, citation);
+      }
       lastIndex = index + citation.length;
     }
 
     appendPlainText(container, text.slice(lastIndex));
+  }
+
+  function normalizeCourseIdForCitation(courseId) {
+    return String(courseId || "").replace(/\s+/g, "");
+  }
+
+  function resolveCitationCourseId(courseId) {
+    const compactCourseId = normalizeCourseIdForCitation(courseId);
+    const courses = state.courseIndex.courses || [];
+    const exactCourse = courses.find((course) => course.id === courseId);
+
+    if (exactCourse) {
+      return exactCourse.id;
+    }
+
+    const compactCourse = courses.find(
+      (course) => normalizeCourseIdForCitation(course.id) === compactCourseId,
+    );
+
+    return compactCourse ? compactCourse.id : courseId;
+  }
+
+  function parseCitationTarget(rawLabel) {
+    const label = String(rawLabel || "").trim();
+    const currentMatch = label.match(/^P\s*(\d+)$/i);
+
+    if (currentMatch) {
+      return {
+        courseId: state.currentCourseId,
+        page: Number(currentMatch[1]),
+      };
+    }
+
+    const crossCourseMatch = label.match(/^(.+)-\s*(\d+)$/);
+
+    if (!crossCourseMatch) {
+      return null;
+    }
+
+    return {
+      courseId: resolveCitationCourseId(crossCourseMatch[1].trim()),
+      page: Number(crossCourseMatch[2]),
+    };
+  }
+
+  function citationTargetKey(courseId, pageNumber) {
+    return `${normalizeCourseIdForCitation(resolveCitationCourseId(courseId))}:${Number(
+      pageNumber,
+    )}`;
+  }
+
+  function buildCitationDisplayMap(text) {
+    const displayMap = new Map();
+    let nextNumber = 1;
+
+    for (const match of text.matchAll(citationPattern)) {
+      const target = parseCitationTarget(match[1]);
+
+      if (!target) {
+        continue;
+      }
+
+      const key = citationTargetKey(target.courseId, target.page);
+
+      if (!displayMap.has(key)) {
+        displayMap.set(key, {
+          number: nextNumber,
+        });
+        nextNumber += 1;
+      }
+    }
+
+    return displayMap;
+  }
+
+  function getCitationDisplay(displayMap, target, fallbackLabel) {
+    const key = citationTargetKey(target.courseId, target.page);
+    const display = displayMap.get(key);
+
+    if (display) {
+      return display;
+    }
+
+    return {
+      number: fallbackLabel,
+    };
+  }
+
+  function canonicalizeCitationText(text, citations) {
+    if (!Array.isArray(citations) || !citations.length) {
+      return text;
+    }
+
+    return text.replace(citationPattern, (fullLabel, rawLabel) => {
+      const target = parseCitationTarget(rawLabel);
+
+      if (!target) {
+        return fullLabel;
+      }
+
+      const matchedCitation = citations.find(
+        (citation) =>
+          Number(citation.page) === target.page &&
+          normalizeCourseIdForCitation(citation.courseId) ===
+            normalizeCourseIdForCitation(target.courseId),
+      );
+
+      return matchedCitation && matchedCitation.label
+        ? matchedCitation.label
+        : fullLabel;
+    });
   }
 
   function appendPlainText(container, text) {
@@ -425,13 +690,146 @@
     });
   }
 
-  function createCitationButton(label, pageNumber) {
+  function createCitationButton({ label, displayNumber, courseId, pageNumber }) {
     const button = document.createElement("button");
     button.type = "button";
     button.className = "citation-button";
-    button.textContent = label;
-    button.addEventListener("click", () => setActiveSlidePage(pageNumber));
+    button.textContent = String(displayNumber);
+    button.dataset.tooltip = label;
+    button.setAttribute("aria-label", label);
+    button.addEventListener("click", () => {
+      void navigateToCitation(courseId, pageNumber);
+    });
     return button;
+  }
+
+  function isCurrentCourse(courseId) {
+    return resolveCourseId(courseId) === resolveCourseId(state.currentCourseId);
+  }
+
+  function formatConversationTime(value) {
+    if (!value) {
+      return "";
+    }
+
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) {
+      return "";
+    }
+
+    return date.toLocaleString("zh-CN", {
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+    });
+  }
+
+  function renderConversationGroup(container, label, conversations) {
+    if (!conversations.length) {
+      return;
+    }
+
+    const heading = document.createElement("div");
+    heading.className = "chat-history-group-title";
+    heading.textContent = label;
+    container.append(heading);
+
+    conversations.forEach((conversation) => {
+      const item = document.createElement("div");
+      item.className = "chat-history-item";
+      item.classList.toggle(
+        "active",
+        conversation.id === state.activeConversationId,
+      );
+
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "chat-history-open";
+
+      const title = document.createElement("span");
+      title.className = "chat-history-title";
+      title.textContent = conversation.title || "未命名对话";
+
+      const meta = document.createElement("span");
+      meta.className = "chat-history-meta";
+      meta.textContent = `${conversation.courseName || "未知课程"} · ${
+        formatConversationTime(conversation.updatedAt) || "刚刚"
+      }`;
+
+      button.append(title, meta);
+      button.addEventListener("click", () => {
+        void loadConversation(conversation.id);
+      });
+
+      const deleteButton = document.createElement("button");
+      deleteButton.type = "button";
+      deleteButton.className = "chat-history-delete";
+      deleteButton.setAttribute("aria-label", "删除对话");
+      deleteButton.textContent = "×";
+      deleteButton.addEventListener("click", () => {
+        void removeConversation(conversation.id);
+      });
+
+      item.append(button, deleteButton);
+      container.append(item);
+    });
+  }
+
+  function renderHistoryMenu() {
+    elements.chatHistoryMenu.innerHTML = "";
+    elements.chatHistoryMenu.hidden = !state.isHistoryOpen;
+
+    if (!state.isHistoryOpen) {
+      return;
+    }
+
+    const dialog = document.createElement("div");
+    dialog.className = "chat-history-dialog";
+
+    const header = document.createElement("div");
+    header.className = "chat-history-dialog-header";
+
+    const title = document.createElement("div");
+    title.className = "chat-history-dialog-title";
+    title.textContent = "历史对话";
+
+    const closeButton = document.createElement("button");
+    closeButton.type = "button";
+    closeButton.className = "chat-history-close";
+    closeButton.setAttribute("aria-label", "关闭历史对话");
+    closeButton.textContent = "×";
+    closeButton.addEventListener("click", () => {
+      state.isHistoryOpen = false;
+      renderHistoryMenu();
+    });
+
+    header.append(title, closeButton);
+    dialog.append(header);
+
+    const currentCourseConversations = state.conversations.filter((conversation) =>
+      isCurrentCourse(conversation.courseId),
+    );
+    const otherConversations = state.conversations.filter(
+      (conversation) => !isCurrentCourse(conversation.courseId),
+    );
+
+    if (!state.conversations.length) {
+      const empty = document.createElement("div");
+      empty.className = "chat-history-empty";
+      empty.textContent = "暂无历史对话";
+      dialog.append(empty);
+      elements.chatHistoryMenu.append(dialog);
+      return;
+    }
+
+    renderConversationGroup(
+      dialog,
+      "当前课",
+      currentCourseConversations,
+    );
+    renderConversationGroup(dialog, "其他课程", otherConversations);
+    elements.chatHistoryMenu.append(dialog);
   }
 
   function renderMessages() {
@@ -441,42 +839,430 @@
       const row = document.createElement("article");
       row.className = `message-row ${message.role}`;
 
+      const stack = document.createElement("div");
+      stack.className = "message-stack";
+
       const bubble = document.createElement("div");
       bubble.className = "message-bubble";
-      appendTextWithCitations(bubble, message.content);
+      appendTextWithCitations(
+        bubble,
+        message.content,
+        buildCitationDisplayMap(message.content),
+      );
 
-      row.append(bubble);
+      stack.append(bubble);
+
+      if (
+        state.isSending &&
+        !state.hasAssistantToken &&
+        message.id === state.pendingMessageId &&
+        state.pendingStatus
+      ) {
+        const status = document.createElement("div");
+        status.className = "message-status";
+        status.textContent = `${state.pendingStatus}...`;
+        stack.append(status);
+      }
+
+      row.append(stack);
       elements.messageList.append(row);
     });
 
-    if (state.isSending) {
-      const pending = document.createElement("div");
-      pending.className = "empty-state";
-      pending.textContent = "正在生成回复...";
-      elements.messageList.append(pending);
+    if (state.isStartingConversation && state.starterStatus) {
+      const status = document.createElement("div");
+      status.className = "chat-inline-status";
+      status.textContent = state.starterStatus;
+      elements.messageList.append(status);
     }
 
     elements.messageList.scrollTop = elements.messageList.scrollHeight;
+    renderHistoryMenu();
   }
 
-  function mockSendChatMessage(messages, courseId, currentNote) {
-    const latestUserMessage = [...messages]
-      .reverse()
-      .find((message) => message.role === "user");
-    const noteHint = currentNote.trim()
-      ? "我也参考了你右侧笔记里的当前内容。"
-      : "右侧笔记目前还没有额外上下文。";
+  function clearPendingStatusTimer() {
+    if (state.pendingStatusTimer) {
+      window.clearTimeout(state.pendingStatusTimer);
+      state.pendingStatusTimer = null;
+    }
+  }
 
-    return new Promise((resolve) => {
-      window.setTimeout(() => {
-        resolve({
-          id: `assistant-${Date.now()}`,
-          role: "assistant",
-          content: `你问的是：“${
-            latestUserMessage ? latestUserMessage.content : "这个问题"
-          }”。${noteHint}\n\n可以先看课件中对核心概念的定义 [引用第5页]，再对照后面的例子整理成自己的话 [引用第12页]。`,
+  function resetChatProgress() {
+    clearPendingStatusTimer();
+    state.pendingStatus = "";
+    state.pendingStatusSince = 0;
+    state.pendingMessageId = null;
+    state.hasAssistantToken = false;
+  }
+
+  function updatePendingStatus(label) {
+    if (!label || !state.isSending || state.hasAssistantToken) {
+      return;
+    }
+
+    const applyStatus = () => {
+      if (!state.isSending || state.hasAssistantToken) {
+        return;
+      }
+
+      state.pendingStatus = label;
+      state.pendingStatusSince = Date.now();
+      renderMessages();
+    };
+
+    clearPendingStatusTimer();
+
+    if (!state.pendingStatusSince) {
+      applyStatus();
+      return;
+    }
+
+    const elapsed = Date.now() - state.pendingStatusSince;
+
+    if (elapsed >= STATUS_MIN_VISIBLE_MS) {
+      applyStatus();
+      return;
+    }
+
+    state.pendingStatusTimer = window.setTimeout(
+      applyStatus,
+      STATUS_MIN_VISIBLE_MS - elapsed,
+    );
+  }
+
+  function parseSseBlock(block) {
+    const lines = block.split(/\r?\n/);
+    let event = "message";
+    const dataLines = [];
+
+    lines.forEach((line) => {
+      if (line.startsWith("event:")) {
+        event = line.slice("event:".length).trim();
+      } else if (line.startsWith("data:")) {
+        dataLines.push(line.slice("data:".length).trimStart());
+      }
+    });
+
+    const dataText = dataLines.join("\n");
+
+    return {
+      event,
+      data: dataText ? JSON.parse(dataText) : {},
+    };
+  }
+
+  async function readSseStream(response, handleEvent) {
+    if (!response.body) {
+      throw new Error("chat stream unavailable");
+    }
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+
+    while (true) {
+      const { value, done } = await reader.read();
+
+      if (done) {
+        break;
+      }
+
+      buffer += decoder.decode(value, { stream: true });
+      const blocks = buffer.split("\n\n");
+      buffer = blocks.pop() || "";
+
+      for (const block of blocks) {
+        if (block.trim()) {
+          handleEvent(parseSseBlock(block));
+        }
+      }
+    }
+
+    buffer += decoder.decode();
+
+    if (buffer.trim()) {
+      handleEvent(parseSseBlock(buffer));
+    }
+  }
+
+  function applyConversation(conversation) {
+    state.activeConversationId = conversation.id || null;
+    state.messages = Array.isArray(conversation.messages)
+      ? conversation.messages
+      : defaultChatMessages();
+    state.lastChatMetadata = null;
+    state.isStartingConversation = false;
+    state.starterStatus = "";
+    resetChatProgress();
+    renderMessages();
+  }
+
+  async function refreshConversations() {
+    try {
+      const data = await fetchChatConversations(state.currentCourseId);
+      state.conversations = Array.isArray(data.conversations)
+        ? data.conversations
+        : [];
+    } catch (error) {
+      console.warn("读取历史对话失败。", error);
+      state.conversations = [];
+    }
+
+    renderHistoryMenu();
+  }
+
+  async function loadLatestConversationForCurrentCourse() {
+    await refreshConversations();
+
+    const latestCurrentConversation = state.conversations.find((conversation) =>
+      isCurrentCourse(conversation.courseId),
+    );
+
+    if (!latestCurrentConversation) {
+      state.activeConversationId = null;
+      await startNewConversation();
+      return;
+    }
+
+    await loadConversation(latestCurrentConversation.id, { keepHistoryOpen: true });
+  }
+
+  async function loadConversation(conversationId, options = {}) {
+    try {
+      const data = await fetchChatConversation(conversationId);
+      const conversation = data.conversation;
+
+      if (!conversation) {
+        throw new Error("conversation missing");
+      }
+
+      if (!isCurrentCourse(conversation.courseId)) {
+        state.currentCourseId = conversation.courseId;
+        state.activeSlidePage = 1;
+        window.history.replaceState(
+          {},
+          "",
+          `/course/${encodeURIComponent(state.currentCourseId)}`,
+        );
+        await initNotes();
+        await loadCurrentCourse();
+        await refreshConversations();
+      }
+
+      applyConversation(conversation);
+
+      if (!options.keepHistoryOpen) {
+        state.isHistoryOpen = false;
+        renderHistoryMenu();
+      }
+    } catch (error) {
+      console.error(error);
+    }
+  }
+
+  async function removeConversation(conversationId) {
+    try {
+      await deleteChatConversation(conversationId);
+      await refreshConversations();
+
+      if (conversationId !== state.activeConversationId) {
+        return;
+      }
+
+      const latestCurrentConversation = state.conversations.find((conversation) =>
+        isCurrentCourse(conversation.courseId),
+      );
+
+      state.activeConversationId = null;
+      state.messages = defaultChatMessages();
+
+      if (latestCurrentConversation) {
+        await loadConversation(latestCurrentConversation.id, {
+          keepHistoryOpen: true,
         });
-      }, 900);
+      } else {
+        await startNewConversation();
+      }
+    } catch (error) {
+      console.error(error);
+    }
+  }
+
+  async function startNewConversation() {
+    if (state.isSending || state.isStartingConversation) {
+      return null;
+    }
+
+    let conversation = null;
+    let assistantMessage = null;
+
+    state.isStartingConversation = true;
+    state.starterStatus = "正在生成总结...";
+    state.activeConversationId = null;
+    state.messages = [];
+    state.lastChatMetadata = null;
+    state.isHistoryOpen = false;
+    elements.newChatButton.disabled = true;
+    elements.chatSubmit.disabled = true;
+    renderMessages();
+
+    try {
+      await createChatConversationStream(state.currentCourseId, ({ event, data }) => {
+        if (event === "metadata" && data.conversation) {
+          conversation = data.conversation;
+          state.activeConversationId = conversation.id || state.activeConversationId;
+          return;
+        }
+
+        if (event === "token") {
+          const delta = data.delta || "";
+
+          if (!delta) {
+            return;
+          }
+
+          if (!assistantMessage) {
+            assistantMessage = {
+              id: `assistant-starter-${Date.now()}`,
+              role: "assistant",
+              content: "",
+            };
+            state.messages = [assistantMessage];
+          }
+
+          state.isStartingConversation = false;
+          state.starterStatus = "";
+          assistantMessage.content += delta;
+          renderMessages();
+          return;
+        }
+
+        if (event === "error") {
+          throw new Error(data.message || "conversation stream error");
+        }
+      });
+
+      state.isStartingConversation = false;
+      state.starterStatus = "";
+      await refreshConversations();
+      renderHistoryMenu();
+      return conversation;
+    } catch (error) {
+      console.error(error);
+      state.isStartingConversation = false;
+      state.starterStatus = "";
+      state.messages = [
+        {
+          id: `assistant-error-${Date.now()}`,
+          role: "assistant",
+          content: "新建对话失败，请稍后重试。",
+        },
+      ];
+      state.activeConversationId = null;
+      renderMessages();
+      return null;
+    } finally {
+      state.isStartingConversation = false;
+      state.starterStatus = "";
+      elements.newChatButton.disabled = false;
+      elements.chatSubmit.disabled = false;
+      renderMessages();
+    }
+  }
+
+  async function ensureActiveConversation() {
+    if (state.activeConversationId) {
+      return true;
+    }
+
+    const conversation = await startNewConversation();
+    return Boolean(conversation);
+  }
+
+  async function saveActiveConversation() {
+    if (!state.activeConversationId) {
+      return;
+    }
+
+    try {
+      await saveChatConversation(state.activeConversationId, state.messages);
+      await refreshConversations();
+    } catch (error) {
+      console.warn("保存历史对话失败。", error);
+    }
+  }
+
+  async function sendChatMessage() {
+    const response = await fetch("/api/chat", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        courseId: state.currentCourseId,
+        currentPage: getCurrentVisibleSlidePage(),
+        currentNote: state.noteContent,
+        messages: state.messages.map((message) => ({
+          id: message.id,
+          role: message.role,
+          content: message.content,
+        })),
+      }),
+    });
+
+    if (!response.ok) {
+      throw new Error("chat api unavailable");
+    }
+
+    let assistantMessage = null;
+
+    await readSseStream(response, ({ event, data }) => {
+      if (event === "status") {
+        updatePendingStatus(data.label);
+        return;
+      }
+
+      if (event === "token") {
+        const delta = data.delta || "";
+
+        if (!delta) {
+          return;
+        }
+
+        if (!assistantMessage) {
+          assistantMessage = {
+            id: `assistant-${Date.now()}`,
+            role: "assistant",
+            content: "",
+            citations: [],
+          };
+          state.messages.push(assistantMessage);
+        }
+
+        clearPendingStatusTimer();
+        state.hasAssistantToken = true;
+        state.pendingStatus = "";
+        assistantMessage.content += delta;
+        renderMessages();
+        return;
+      }
+
+      if (event === "metadata") {
+        state.lastChatMetadata = data;
+
+        if (assistantMessage) {
+          assistantMessage.citations = data.citations || [];
+          assistantMessage.content = canonicalizeCitationText(
+            assistantMessage.content,
+            assistantMessage.citations,
+          );
+          renderMessages();
+        }
+        return;
+      }
+
+      if (event === "error") {
+        throw new Error(data.message || "chat stream error");
+      }
     });
   }
 
@@ -511,6 +1297,8 @@
   async function handleCourseChange(event) {
     state.currentCourseId = event.target.value;
     state.activeSlidePage = 1;
+    state.activeConversationId = null;
+    state.isHistoryOpen = false;
     window.history.replaceState(
       {},
       "",
@@ -518,6 +1306,28 @@
     );
     await initNotes();
     await loadCurrentCourse();
+    await loadLatestConversationForCurrentCourse();
+  }
+
+  async function navigateToCitation(courseId, pageNumber) {
+    const targetCourseId = courseId || state.currentCourseId;
+    const targetPage = Math.max(1, Math.floor(Number(pageNumber) || 1));
+
+    if (resolveCourseId(targetCourseId) === resolveCourseId(state.currentCourseId)) {
+      setActiveSlidePage(targetPage);
+      return;
+    }
+
+    state.currentCourseId = targetCourseId;
+    state.activeSlidePage = targetPage;
+    window.history.replaceState(
+      {},
+      "",
+      `/course/${encodeURIComponent(state.currentCourseId)}`,
+    );
+    await initNotes();
+    await loadCurrentCourse();
+    setActiveSlidePage(targetPage);
   }
 
   async function loadCurrentCourse() {
@@ -537,6 +1347,12 @@
       return;
     }
 
+    const hasConversation = await ensureActiveConversation();
+
+    if (!hasConversation) {
+      return;
+    }
+
     const userMessage = {
       id: `user-${Date.now()}`,
       role: "user",
@@ -545,21 +1361,27 @@
 
     state.messages.push(userMessage);
     state.isSending = true;
+    resetChatProgress();
+    state.pendingMessageId = userMessage.id;
     elements.chatInput.value = "";
     resizeChatInput();
     elements.chatSubmit.disabled = true;
     renderMessages();
 
     try {
-      const assistantMessage = await mockSendChatMessage(
-        state.messages,
-        state.currentCourseId,
-        state.noteContent,
-      );
-      state.messages.push(assistantMessage);
+      await sendChatMessage();
+    } catch (error) {
+      console.error(error);
+      state.messages.push({
+        id: `assistant-error-${Date.now()}`,
+        role: "assistant",
+        content: "生成失败，请稍后重试。",
+      });
     } finally {
+      await saveActiveConversation();
       state.isSending = false;
       elements.chatSubmit.disabled = false;
+      resetChatProgress();
       renderMessages();
     }
   }
@@ -682,6 +1504,15 @@
     void saveCurrentNote();
   }
 
+  function handleHistoryClick() {
+    state.isHistoryOpen = !state.isHistoryOpen;
+    renderHistoryMenu();
+  }
+
+  function handleNewChatClick() {
+    void startNewConversation();
+  }
+
   async function initNotes() {
     if (state.saveTimer) {
       window.clearTimeout(state.saveTimer);
@@ -733,12 +1564,15 @@
     elements.autoSaveMode.addEventListener("click", handleSaveModeClick);
     elements.manualSaveMode.addEventListener("click", handleSaveModeClick);
     elements.manualSaveButton.addEventListener("click", handleManualSaveClick);
+    elements.newChatButton.addEventListener("click", handleNewChatClick);
+    elements.chatHistoryButton.addEventListener("click", handleHistoryClick);
     elements.noteEditor.addEventListener("input", handleNoteInput);
     elements.courseSelect.addEventListener("change", handleCourseChange);
     await fetchCourseIndex();
     renderCourseSelect();
     await initNotes();
     await loadCurrentCourse();
+    await loadLatestConversationForCurrentCourse();
   }
 
   init();

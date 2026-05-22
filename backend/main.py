@@ -1,10 +1,14 @@
 import os
 import sys
 import json
+import asyncio
+import queue
+import threading
+from uuid import uuid4
 from pathlib import Path
 from datetime import datetime, timezone
 
-from flask import Flask, jsonify, request, send_file, send_from_directory
+from flask import Flask, Response, jsonify, request, send_file, send_from_directory, stream_with_context
 
 try:
     from dotenv import load_dotenv
@@ -18,6 +22,9 @@ load_dotenv()
 REPO_ROOT = Path(__file__).resolve().parents[1]
 FRONTEND_DIR = REPO_ROOT / "frontend"
 NOTES_PATH = Path(os.getenv("COURSE_NOTES_PATH", REPO_ROOT / "backend" / "user_notes.json"))
+CHAT_HISTORY_PATH = Path(
+    os.getenv("COURSE_CHAT_HISTORY_PATH", REPO_ROOT / "backend" / "chat_conversations.json")
+)
 
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
@@ -32,8 +39,24 @@ from docker_1 import (  # noqa: E402
     build_course_index,
     get_slide_page_path,
 )
+from backend.conversation_store import (  # noqa: E402
+    build_conversation_shell,
+    chat_messages_from_payload,
+    conversation_sort_key,
+    conversation_summary,
+    conversation_title,
+    first_user_message,
+    read_chat_store as read_chat_store_from_path,
+    read_notes_store as read_notes_store_from_path,
+    resolve_existing_course_id,
+    utc_now_iso,
+    write_chat_store as write_chat_store_to_path,
+    write_notes_store as write_notes_store_to_path,
+)
+from backend.rag_service import CourseRAGService  # noqa: E402
 
 app = Flask(__name__, static_folder=str(FRONTEND_DIR), static_url_path="")
+rag_service = CourseRAGService()
 
 
 def not_implemented(feature: str):
@@ -60,34 +83,134 @@ def error_response(status_code: int, error: str, message: str, details=None):
     return jsonify(body), status_code
 
 
-def utc_now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
-
-
 def read_notes_store():
-    if not NOTES_PATH.exists():
-        return {}
-
-    try:
-        with NOTES_PATH.open("r", encoding="utf-8") as file:
-            data = json.load(file)
-    except (OSError, json.JSONDecodeError):
-        return {}
-
-    return data if isinstance(data, dict) else {}
+    return read_notes_store_from_path(NOTES_PATH)
 
 
 def write_notes_store(notes):
-    NOTES_PATH.parent.mkdir(parents=True, exist_ok=True)
-
-    with NOTES_PATH.open("w", encoding="utf-8") as file:
-        json.dump(notes, file, ensure_ascii=False, indent=2)
-        file.write("\n")
+    write_notes_store_to_path(NOTES_PATH, notes)
 
 
-def resolve_existing_course_id(course_id: str) -> str:
-    deck = build_course_deck(course_id)
-    return deck["resolvedCourseId"]
+def read_chat_store():
+    return read_chat_store_from_path(CHAT_HISTORY_PATH)
+
+
+def write_chat_store(store):
+    write_chat_store_to_path(CHAT_HISTORY_PATH, store)
+
+
+def update_conversation_title(conversation, messages):
+    first_user = first_user_message(messages)
+    if not first_user:
+        conversation["title"] = conversation_title(
+            messages,
+            f"{conversation.get('courseName') or '学习助手'} 对话",
+        )
+        return
+
+    first_user_id = first_user.get("id") or ""
+    if conversation.get("titleSourceUserId") == first_user_id and conversation.get("title"):
+        return
+
+    fallback = conversation_title(messages, f"{conversation.get('courseName') or '学习助手'} 对话")
+
+    try:
+        title = asyncio.run(
+            rag_service.generate_conversation_title(
+                str(first_user.get("content") or ""),
+                str(conversation.get("courseName") or ""),
+            )
+        )
+    except Exception:
+        app.logger.exception("Failed to generate conversation title")
+        title = fallback
+
+    conversation["title"] = title or fallback
+    conversation["titleSourceUserId"] = first_user_id
+
+
+def sse_chunk(event: dict) -> str:
+    event_type = event.get("type", "message")
+    payload = {key: value for key, value in event.items() if key != "type"}
+
+    return (
+        f"event: {event_type}\n"
+        f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
+    )
+
+
+def consume_rag_stream(request_payload, output_queue):
+    async def consume():
+        async for event in rag_service.answer_stream(request_payload):
+            output_queue.put(sse_chunk(event))
+
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+
+    try:
+        loop.run_until_complete(consume())
+    except Exception:
+        app.logger.exception("RAG SSE stream failed")
+        output_queue.put(
+            sse_chunk(
+                {
+                    "type": "error",
+                    "error": "CHAT_STREAM_ERROR",
+                    "message": "聊天流生成失败。",
+                }
+            )
+        )
+    finally:
+        loop.close()
+        output_queue.put(None)
+
+
+def consume_course_starter_stream(course_id, conversation, output_queue):
+    async def consume():
+        content_parts = []
+        output_queue.put(sse_chunk({"type": "metadata", "conversation": conversation}))
+
+        async for delta in rag_service.stream_course_starter(course_id):
+            content_parts.append(delta)
+            output_queue.put(sse_chunk({"type": "token", "delta": delta}))
+
+        content = "".join(content_parts).strip()
+        if content:
+            conversation["messages"] = [
+                {
+                    "id": f"assistant-starter-{uuid4().hex[:10]}",
+                    "role": "assistant",
+                    "content": content,
+                }
+            ]
+            conversation["title"] = conversation_title(
+                conversation["messages"],
+                f"{conversation.get('courseName') or '学习助手'} 学习建议",
+            )
+            conversation["updatedAt"] = utc_now_iso()
+
+        output_queue.put(sse_chunk({"type": "metadata", "conversation": conversation_summary(conversation)}))
+        output_queue.put(sse_chunk({"type": "done"}))
+
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+
+    try:
+        loop.run_until_complete(consume())
+    except Exception:
+        app.logger.exception("Course starter SSE stream failed")
+        output_queue.put(
+            sse_chunk(
+                {
+                    "type": "error",
+                    "error": "COURSE_STARTER_ERROR",
+                    "message": "课程总结生成失败。",
+                }
+            )
+        )
+    finally:
+        loop.close()
+        output_queue.put(None)
 
 
 @app.get("/")
@@ -206,10 +329,203 @@ def save_course_note(course_id: str):
     )
 
 
+@app.get("/api/chat/conversations")
+def list_chat_conversations():
+    course_id = request.args.get("courseId", "")
+    store = read_chat_store()
+    conversations = list(store["conversations"].values())
+    conversations.sort(
+        key=lambda conversation: str(conversation.get("updatedAt") or conversation.get("createdAt") or ""),
+        reverse=True,
+    )
+    conversations.sort(key=conversation_sort_key(course_id))
+
+    return jsonify(
+        {
+            "conversations": [
+                conversation_summary(conversation)
+                for conversation in conversations
+                if isinstance(conversation, dict)
+            ]
+        }
+    )
+
+
+@app.post("/api/chat/conversations")
+def create_chat_conversation():
+    payload = request.get_json(silent=True) or {}
+    course_id = payload.get("courseId")
+
+    if not isinstance(course_id, str) or not course_id.strip():
+        return error_response(
+            400,
+            "INVALID_COURSE_ID",
+            "Request body must include a string 'courseId' field.",
+        )
+
+    try:
+        conversation = build_conversation_shell(course_id)
+    except CourseNotFound as exc:
+        return error_response(404, "COURSE_NOT_FOUND", str(exc))
+    except SlideCatalogError as exc:
+        return error_response(500, "SLIDE_CATALOG_ERROR", str(exc))
+
+    course_name = conversation["courseName"]
+
+    try:
+        starter = asyncio.run(rag_service.generate_course_starter(course_id))
+    except Exception:
+        app.logger.exception("Failed to generate course starter")
+        starter = (
+            f"这节课是《{course_name}》，建议先浏览课件主线，再围绕核心概念、"
+            "关键例子和实验任务做笔记。"
+        )
+
+    messages = [
+        {
+            "id": f"assistant-starter-{uuid4().hex[:10]}",
+            "role": "assistant",
+            "content": starter,
+        }
+    ]
+    conversation["title"] = conversation_title(messages, f"{course_name} 学习建议")
+    conversation["updatedAt"] = utc_now_iso()
+    conversation["messages"] = messages
+
+    store = read_chat_store()
+    store["conversations"][conversation["id"]] = conversation
+    write_chat_store(store)
+
+    return jsonify({"conversation": conversation})
+
+
+@app.post("/api/chat/conversations/stream")
+def create_chat_conversation_stream():
+    payload = request.get_json(silent=True) or {}
+    course_id = payload.get("courseId")
+
+    if not isinstance(course_id, str) or not course_id.strip():
+        return error_response(
+            400,
+            "INVALID_COURSE_ID",
+            "Request body must include a string 'courseId' field.",
+        )
+
+    try:
+        conversation = build_conversation_shell(course_id)
+    except CourseNotFound as exc:
+        return error_response(404, "COURSE_NOT_FOUND", str(exc))
+    except SlideCatalogError as exc:
+        return error_response(500, "SLIDE_CATALOG_ERROR", str(exc))
+
+    def generate():
+        output_queue = queue.Queue(maxsize=100)
+        worker = threading.Thread(
+            target=consume_course_starter_stream,
+            args=(course_id, conversation, output_queue),
+            daemon=True,
+        )
+        worker.start()
+
+        while True:
+            chunk = output_queue.get()
+            if chunk is None:
+                break
+            yield chunk
+
+    return Response(
+        stream_with_context(generate()),
+        mimetype="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+@app.get("/api/chat/conversations/<conversation_id>")
+def get_chat_conversation(conversation_id: str):
+    store = read_chat_store()
+    conversation = store["conversations"].get(conversation_id)
+
+    if not isinstance(conversation, dict):
+        return error_response(404, "CONVERSATION_NOT_FOUND", "Conversation not found.")
+
+    return jsonify({"conversation": conversation})
+
+
+@app.put("/api/chat/conversations/<conversation_id>")
+def update_chat_conversation(conversation_id: str):
+    payload = request.get_json(silent=True) or {}
+    messages = chat_messages_from_payload(payload.get("messages"))
+    store = read_chat_store()
+    conversation = store["conversations"].get(conversation_id)
+
+    if not isinstance(conversation, dict):
+        course_id = payload.get("courseId")
+        if not isinstance(course_id, str) or not course_id.strip():
+            return error_response(
+                400,
+                "INVALID_COURSE_ID",
+                "Saving a new conversation requires a string 'courseId' field.",
+            )
+
+        try:
+            conversation = build_conversation_shell(course_id, conversation_id=conversation_id)
+        except CourseNotFound as exc:
+            return error_response(404, "COURSE_NOT_FOUND", str(exc))
+        except SlideCatalogError as exc:
+            return error_response(500, "SLIDE_CATALOG_ERROR", str(exc))
+        store["conversations"][conversation_id] = conversation
+
+    conversation["messages"] = messages
+    conversation["updatedAt"] = utc_now_iso()
+    update_conversation_title(conversation, messages)
+    write_chat_store(store)
+
+    return jsonify({"conversation": conversation_summary(conversation)})
+
+
+@app.delete("/api/chat/conversations/<conversation_id>")
+def delete_chat_conversation(conversation_id: str):
+    store = read_chat_store()
+
+    if conversation_id not in store["conversations"]:
+        return error_response(404, "CONVERSATION_NOT_FOUND", "Conversation not found.")
+
+    del store["conversations"][conversation_id]
+    write_chat_store(store)
+
+    return jsonify({"success": True, "conversationId": conversation_id})
+
+
 @app.post("/api/chat")
 def chat():
-    request.get_json(silent=True)
-    return not_implemented("POST /api/chat")
+    payload = request.get_json(silent=True) or {}
+
+    def generate():
+        output_queue = queue.Queue(maxsize=100)
+        worker = threading.Thread(
+            target=consume_rag_stream,
+            args=(payload, output_queue),
+            daemon=True,
+        )
+        worker.start()
+
+        while True:
+            chunk = output_queue.get()
+            if chunk is None:
+                break
+            yield chunk
+
+    return Response(
+        stream_with_context(generate()),
+        mimetype="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 if __name__ == "__main__":
