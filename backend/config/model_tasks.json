@@ -1,6 +1,18 @@
 {
-  "router": "qwen",
-  "course_starter": "qwen",
-  "conversation_title": "deepseek",
-  "final_answer": "qwen"
+  "router": {
+    "primary": "qwen",
+    "fallback": "siliconflow_qwen"
+  },
+  "course_starter": {
+    "primary": "qwen",
+    "fallback": "siliconflow_qwen"
+  },
+  "conversation_title": {
+    "primary": "qwen",
+    "fallback": "siliconflow_qwen"
+  },
+  "final_answer": {
+    "primary": "qwen",
+    "fallback": "siliconflow_qwen"
+  }
 }

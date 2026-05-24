@@ -1,27 +1,24 @@
 {
   "providers": {
     "qwen": {
-      "base_url_env": "QWEN_BASE_URL",
       "base_url": "http://10.10.4.99:2026/v1",
-      "chat_path_env": "QWEN_CHAT_COMPLETIONS_PATH",
       "chat_path": "/chat/completions",
-      "api_key_env": "QWEN_API_KEY",
       "api_key": "qwenv35",
-      "model_env": "QWEN_MODEL",
       "model": "qwenv35",
-      "enable_thinking_env": "QWEN_ENABLE_THINKING",
       "enable_thinking": false
     },
     "deepseek": {
-      "base_url_env": "DS_BASE_URL",
       "base_url": "http://10.10.4.99:2025/v1",
-      "chat_path_env": "DS_CHAT_COMPLETIONS_PATH",
       "chat_path": "/chat/completions",
-      "api_key_env": "DS_API_KEY",
       "api_key": "dsflash",
-      "model_env": "DS_MODEL",
       "model": "dsflash",
-      "enable_thinking_env": "DS_ENABLE_THINKING",
+      "enable_thinking": false
+    },
+    "siliconflow_qwen": {
+      "base_url": "https://api.siliconflow.cn/v1",
+      "chat_path": "/chat/completions",
+      "api_key": "sk-mtnaepjhjdifuucnyydcvllzrxbldukhqttaicivhsirpqeh",
+      "model": "Qwen/Qwen3.5-397B-A17B",
       "enable_thinking": false
     }
   }

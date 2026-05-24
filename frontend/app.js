@@ -58,6 +58,13 @@
   const MAX_SLIDE_ZOOM = 2.6;
   const SLIDE_WHEEL_ZOOM_STEP = 0.08;
   const STATUS_MIN_VISIBLE_MS = 500;
+  const MATHJAX_CDN_URL = "https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js";
+  const MATHJAX_LOCAL_URL = "/vendor/mathjax/tex-mml-chtml.js";
+  let mathTypesetInFlight = false;
+  let mathTypesetScheduled = false;
+  let mathJaxLoadPromise = null;
+  const mathTypesetRoots = new Set();
+  const streamingViews = new Map();
 
   function getInitialCourseId() {
     const url = new URL(window.location.href);
@@ -537,6 +544,303 @@
     return fallback;
   }
 
+  function appendAssistantMarkdown(container, markdown, citationDisplayMap) {
+    container.classList.add("message-markdown");
+
+    const lines = String(markdown || "").replace(/\r\n/g, "\n").split("\n");
+    let index = 0;
+
+    while (index < lines.length) {
+      const line = lines[index];
+
+      if (!line.trim()) {
+        index += 1;
+        continue;
+      }
+
+      const fenceMatch = line.match(/^```(.*)$/);
+      if (fenceMatch) {
+        const codeLines = [];
+        index += 1;
+
+        while (index < lines.length && !lines[index].startsWith("```")) {
+          codeLines.push(lines[index]);
+          index += 1;
+        }
+
+        if (index < lines.length) {
+          index += 1;
+        }
+
+        const pre = document.createElement("pre");
+        const code = document.createElement("code");
+        const language = fenceMatch[1].trim();
+
+        if (language) {
+          code.className = `language-${language.replace(/[^\w-]/g, "")}`;
+        }
+
+        code.textContent = codeLines.join("\n");
+        pre.append(code);
+        container.append(pre);
+        continue;
+      }
+
+      const headingMatch = line.match(/^(#{1,4})\s+(.+)$/);
+      if (headingMatch) {
+        const heading = document.createElement(`h${headingMatch[1].length + 2}`);
+        appendInlineMarkdown(heading, headingMatch[2].trim(), citationDisplayMap);
+        container.append(heading);
+        index += 1;
+        continue;
+      }
+
+      if (/^\s*(-{3,}|\*{3,}|_{3,})\s*$/.test(line)) {
+        container.append(document.createElement("hr"));
+        index += 1;
+        continue;
+      }
+
+      if (isTableStart(lines, index)) {
+        const table = document.createElement("table");
+        const thead = document.createElement("thead");
+        const tbody = document.createElement("tbody");
+        const headerRow = document.createElement("tr");
+
+        splitTableRow(lines[index]).forEach((cell) => {
+          const th = document.createElement("th");
+          appendInlineMarkdown(th, cell, citationDisplayMap);
+          headerRow.append(th);
+        });
+
+        thead.append(headerRow);
+        table.append(thead);
+        index += 2;
+
+        while (index < lines.length && isTableRow(lines[index])) {
+          const row = document.createElement("tr");
+          splitTableRow(lines[index]).forEach((cell) => {
+            const td = document.createElement("td");
+            appendInlineMarkdown(td, cell, citationDisplayMap);
+            row.append(td);
+          });
+          tbody.append(row);
+          index += 1;
+        }
+
+        table.append(tbody);
+        container.append(table);
+        continue;
+      }
+
+      if (/^>\s?/.test(line)) {
+        const blockquote = document.createElement("blockquote");
+        const quoteLines = [];
+
+        while (index < lines.length && /^>\s?/.test(lines[index])) {
+          quoteLines.push(lines[index].replace(/^>\s?/, ""));
+          index += 1;
+        }
+
+        appendInlineMarkdown(blockquote, quoteLines.join("\n"), citationDisplayMap);
+        container.append(blockquote);
+        continue;
+      }
+
+      const listMatch = line.match(/^(\s*)([-*+]|\d+[.)])\s+(.+)$/);
+      if (listMatch) {
+        const ordered = /\d/.test(listMatch[2]);
+        const list = document.createElement(ordered ? "ol" : "ul");
+
+        while (index < lines.length) {
+          const itemMatch = lines[index].match(/^(\s*)([-*+]|\d+[.)])\s+(.+)$/);
+
+          if (!itemMatch || /\d/.test(itemMatch[2]) !== ordered) {
+            break;
+          }
+
+          const item = document.createElement("li");
+          appendInlineMarkdown(item, itemMatch[3], citationDisplayMap);
+          list.append(item);
+          index += 1;
+        }
+
+        container.append(list);
+        continue;
+      }
+
+      const paragraphLines = [];
+
+      while (
+        index < lines.length &&
+        lines[index].trim() &&
+        !isMarkdownBlockStart(lines, index)
+      ) {
+        paragraphLines.push(lines[index]);
+        index += 1;
+      }
+
+      const paragraph = document.createElement("p");
+      appendInlineMarkdown(paragraph, paragraphLines.join("\n"), citationDisplayMap);
+      container.append(paragraph);
+    }
+  }
+
+  function isMarkdownBlockStart(lines, index) {
+    const line = lines[index] || "";
+    return (
+      /^```/.test(line) ||
+      /^(#{1,4})\s+/.test(line) ||
+      /^\s*(-{3,}|\*{3,}|_{3,})\s*$/.test(line) ||
+      /^>\s?/.test(line) ||
+      /^(\s*)([-*+]|\d+[.)])\s+/.test(line) ||
+      isTableStart(lines, index)
+    );
+  }
+
+  function isTableStart(lines, index) {
+    return isTableRow(lines[index]) && isTableDivider(lines[index + 1] || "");
+  }
+
+  function isTableRow(line) {
+    return Boolean(line && line.includes("|") && line.trim().length > 1);
+  }
+
+  function isTableDivider(line) {
+    return /^\s*\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+\|?\s*$/.test(line);
+  }
+
+  function splitTableRow(line) {
+    return line
+      .trim()
+      .replace(/^\|/, "")
+      .replace(/\|$/, "")
+      .split("|")
+      .map((cell) => cell.trim());
+  }
+
+  function appendInlineMarkdown(container, text, citationDisplayMap) {
+    const source = String(text || "");
+    const token = findNextInlineToken(source);
+
+    if (!token) {
+      appendPlainText(container, source);
+      return;
+    }
+
+    appendPlainText(container, source.slice(0, token.index));
+
+    if (token.type === "math") {
+      appendPlainText(container, token.fullText);
+    } else if (token.type === "citation") {
+      appendCitationToken(container, token.fullText, token.value, citationDisplayMap);
+    } else if (token.type === "code") {
+      const code = document.createElement("code");
+      code.textContent = token.value;
+      container.append(code);
+    } else if (token.type === "link") {
+      const anchor = document.createElement("a");
+      anchor.href = safeMarkdownHref(token.href);
+      anchor.rel = "noreferrer";
+      anchor.target = "_blank";
+      appendInlineMarkdown(anchor, token.value, citationDisplayMap);
+      container.append(anchor);
+    } else {
+      const element = document.createElement(token.type === "bold" ? "strong" : "em");
+      appendInlineMarkdown(element, token.value, citationDisplayMap);
+      container.append(element);
+    }
+
+    appendInlineMarkdown(
+      container,
+      source.slice(token.index + token.fullText.length),
+      citationDisplayMap,
+    );
+  }
+
+  function findNextInlineToken(text) {
+    const patterns = [
+      {
+        type: "math",
+        regex: /(\$\$[\s\S]+?\$\$|\\\[[\s\S]+?\\\]|\\\([\s\S]+?\\\)|\$[^\n$]+\$)/,
+        build: () => ({}),
+      },
+      {
+        type: "citation",
+        regex: /【([^】]+)】/,
+        build: (match) => ({ value: match[1] }),
+      },
+      {
+        type: "code",
+        regex: /`([^`\n]+)`/,
+        build: (match) => ({ value: match[1] }),
+      },
+      {
+        type: "link",
+        regex: /\[([^\]\n]+)\]\(([^)\s]+)\)/,
+        build: (match) => ({ value: match[1], href: match[2] }),
+      },
+      {
+        type: "bold",
+        regex: /\*\*([^*\n][\s\S]*?[^*\n])\*\*/,
+        build: (match) => ({ value: match[1] }),
+      },
+      {
+        type: "italic",
+        regex: /\*([^*\n]+)\*/,
+        build: (match) => ({ value: match[1] }),
+      },
+    ];
+
+    return patterns.reduce((current, pattern) => {
+      const match = pattern.regex.exec(text);
+
+      if (!match) {
+        return current;
+      }
+
+      if (current && match.index >= current.index) {
+        return current;
+      }
+
+      return {
+        type: pattern.type,
+        fullText: match[0],
+        index: match.index,
+        ...pattern.build(match),
+      };
+    }, null);
+  }
+
+  function safeMarkdownHref(href) {
+    const value = String(href || "").trim();
+
+    if (/^(https?:|mailto:|#|\/)/i.test(value)) {
+      return value;
+    }
+
+    return "#";
+  }
+
+  function appendCitationToken(container, fullText, rawLabel, citationDisplayMap) {
+    const target = parseCitationTarget(rawLabel);
+
+    if (!target) {
+      appendPlainText(container, fullText);
+      return;
+    }
+
+    const display = getCitationDisplay(citationDisplayMap, target, fullText);
+    container.append(
+      createCitationButton({
+        label: fullText,
+        displayNumber: display.number,
+        courseId: target.courseId,
+        pageNumber: target.page,
+      }),
+    );
+  }
+
   function appendTextWithCitations(container, text, citationDisplayMap) {
     let lastIndex = 0;
 
@@ -832,23 +1136,39 @@
     elements.chatHistoryMenu.append(dialog);
   }
 
-  function renderMessages() {
+  function renderMessages(options = {}) {
+    const shouldTypesetMath = options.typesetMath !== false;
+    const shouldCompileStreaming = options.compileStreaming === true;
+    streamingViews.clear();
     elements.messageList.innerHTML = "";
 
     state.messages.forEach((message) => {
       const row = document.createElement("article");
       row.className = `message-row ${message.role}`;
+      row.dataset.messageId = message.id || "";
 
       const stack = document.createElement("div");
       stack.className = "message-stack";
 
       const bubble = document.createElement("div");
       bubble.className = "message-bubble";
-      appendTextWithCitations(
-        bubble,
-        message.content,
-        buildCitationDisplayMap(message.content),
-      );
+      if (message.role === "assistant") {
+        if (message.isStreaming && !shouldCompileStreaming) {
+          appendPlainText(bubble, message.content);
+        } else {
+          appendAssistantMarkdown(
+            bubble,
+            message.content,
+            buildCitationDisplayMap(message.content),
+          );
+        }
+      } else {
+        appendTextWithCitations(
+          bubble,
+          message.content,
+          buildCitationDisplayMap(message.content),
+        );
+      }
 
       stack.append(bubble);
 
@@ -877,6 +1197,314 @@
 
     elements.messageList.scrollTop = elements.messageList.scrollHeight;
     renderHistoryMenu();
+    if (shouldTypesetMath && !state.isSending && !state.isStartingConversation) {
+      queueMathTypeset();
+    }
+  }
+
+  function queueMathTypeset(root = elements.messageList) {
+    if (!root || !hasMathContent(root.textContent || "")) {
+      return;
+    }
+
+    mathTypesetRoots.add(root);
+
+    if (mathTypesetScheduled || mathTypesetInFlight) {
+      return;
+    }
+
+    mathTypesetScheduled = true;
+    window.requestAnimationFrame(() => {
+      mathTypesetScheduled = false;
+      void typesetMathNow();
+    });
+  }
+
+  async function typesetMathNow() {
+    if (mathTypesetInFlight || !mathTypesetRoots.size) {
+      return;
+    }
+
+    const roots = Array.from(mathTypesetRoots).filter((root) => root.isConnected);
+    mathTypesetRoots.clear();
+
+    if (!roots.length) {
+      return;
+    }
+
+    const mathJax = await ensureMathJax();
+
+    if (!mathJax || typeof mathJax.typesetPromise !== "function") {
+      return;
+    }
+
+    mathTypesetInFlight = true;
+
+    if (typeof mathJax.typesetClear === "function") {
+      mathJax.typesetClear(roots);
+    }
+
+    try {
+      await mathJax.typesetPromise(roots);
+    } catch (error) {
+      console.warn("MathJax typeset failed.", error);
+    } finally {
+      mathTypesetInFlight = false;
+
+      if (mathTypesetRoots.size) {
+        queueMathTypeset(Array.from(mathTypesetRoots)[0]);
+      }
+    }
+  }
+
+  function ensureMathJax() {
+    if (window.MathJax && typeof window.MathJax.typesetPromise === "function") {
+      return Promise.resolve(window.MathJax);
+    }
+
+    if (mathJaxLoadPromise) {
+      return mathJaxLoadPromise;
+    }
+
+    mathJaxLoadPromise = loadMathJaxScript(MATHJAX_CDN_URL).then((mathJax) => {
+      if (mathJax && typeof mathJax.typesetPromise === "function") {
+        return mathJax;
+      }
+
+      return loadMathJaxScript(MATHJAX_LOCAL_URL);
+    });
+
+    return mathJaxLoadPromise;
+  }
+
+  function loadMathJaxScript(src) {
+    return new Promise((resolve) => {
+      const script = document.createElement("script");
+      let settled = false;
+
+      script.id = src === MATHJAX_CDN_URL ? "MathJax-cdn-script" : "MathJax-local-script";
+      script.src = src;
+      script.async = true;
+
+      const finish = (mathJax) => {
+        if (settled) {
+          return;
+        }
+
+        settled = true;
+        window.clearTimeout(timeout);
+        resolve(mathJax);
+      };
+
+      const timeout = window.setTimeout(() => {
+        script.remove();
+        finish(null);
+      }, 2500);
+
+      script.addEventListener("load", () => {
+        finish(window.MathJax || null);
+      });
+      script.addEventListener("error", () => {
+        script.remove();
+        finish(null);
+      });
+      document.head.append(script);
+    });
+  }
+
+  function hasMathContent(text) {
+    return /(\$\$[\s\S]+?\$\$|\\\[[\s\S]+?\\\]|\\\([\s\S]+?\\\)|\$[^\n$]+\$)/.test(
+      text,
+    );
+  }
+
+  function scheduleStreamingRender(message) {
+    if (message) {
+      renderStreamingMessage(message);
+    }
+  }
+
+  function flushStreamingRender(message) {
+    if (message) {
+      renderStreamingMessage(message, { flush: true });
+    }
+  }
+
+  function renderStreamingMessage(message, options = {}) {
+    clearTransientChatStatus();
+    const view = ensureStreamingView(message);
+    const content = String(message.content || "");
+    const stableEnd = options.flush
+      ? content.length
+      : findStableMarkdownBoundary(content, view.committedLength);
+
+    if (stableEnd > view.committedLength) {
+      const stableText = content.slice(view.committedLength, stableEnd);
+      const block = document.createElement("div");
+      block.className = "streaming-block";
+      appendAssistantMarkdown(
+        block,
+        stableText,
+        buildCitationDisplayMap(content),
+      );
+      view.committedContainer.append(block);
+      queueMathTypeset(block);
+      view.committedLength = stableEnd;
+    }
+
+    const tailText = content.slice(view.committedLength);
+    view.tail.textContent = tailText;
+    elements.messageList.scrollTop = elements.messageList.scrollHeight;
+  }
+
+  function clearTransientChatStatus() {
+    if (state.hasAssistantToken) {
+      elements.messageList
+        .querySelectorAll(".message-status")
+        .forEach((node) => node.remove());
+    }
+
+    if (!state.isStartingConversation) {
+      elements.messageList
+        .querySelectorAll(".chat-inline-status")
+        .forEach((node) => node.remove());
+    }
+  }
+
+  function cssEscape(value) {
+    if (window.CSS && typeof window.CSS.escape === "function") {
+      return window.CSS.escape(String(value || ""));
+    }
+
+    return String(value || "").replace(/["\\]/g, "\\$&");
+  }
+
+  function ensureStreamingView(message) {
+    const cachedView = streamingViews.get(message.id);
+
+    if (cachedView && cachedView.row.isConnected) {
+      return cachedView;
+    }
+
+    const existingRow = elements.messageList.querySelector(
+      `[data-message-id="${cssEscape(message.id)}"]`,
+    );
+
+    if (existingRow) {
+      existingRow.remove();
+    }
+
+    const row = document.createElement("article");
+    row.className = `message-row ${message.role}`;
+    row.dataset.messageId = message.id;
+
+    const stack = document.createElement("div");
+    stack.className = "message-stack";
+
+    const bubble = document.createElement("div");
+    bubble.className = "message-bubble message-markdown";
+
+    const committedContainer = document.createElement("div");
+    committedContainer.className = "streaming-committed";
+
+    const tail = document.createElement("span");
+    tail.className = "streaming-tail";
+
+    bubble.append(committedContainer, tail);
+    stack.append(bubble);
+    row.append(stack);
+    elements.messageList.append(row);
+
+    const view = {
+      row,
+      bubble,
+      committedContainer,
+      tail,
+      committedLength: 0,
+    };
+
+    streamingViews.set(message.id, view);
+    return view;
+  }
+
+  function findStableMarkdownBoundary(text, minIndex) {
+    const searchStart = Math.max(0, minIndex);
+    let boundary = -1;
+    let index = searchStart;
+    let inFence = false;
+    let inMathBlock = false;
+
+    while (index < text.length) {
+      const lineEnd = text.indexOf("\n", index);
+      const lineStop = lineEnd === -1 ? text.length : lineEnd;
+      const line = text.slice(index, lineStop);
+      const trimmed = line.trim();
+
+      if (trimmed.startsWith("```")) {
+        inFence = !inFence;
+        if (!inFence && lineEnd !== -1) {
+          boundary = lineEnd + 1;
+        }
+      } else if (!inFence) {
+        const mathState = getMathBlockState(trimmed, inMathBlock);
+
+        if (mathState.started) {
+          inMathBlock = true;
+        }
+
+        if (mathState.ended) {
+          inMathBlock = false;
+
+          if (lineEnd !== -1) {
+            boundary = lineEnd + 1;
+          }
+        } else if (!inMathBlock && trimmed === "" && lineEnd !== -1) {
+          boundary = lineEnd + 1;
+        }
+      }
+
+      if (lineEnd === -1) {
+        break;
+      }
+
+      index = lineEnd + 1;
+    }
+
+    return boundary > minIndex ? boundary : minIndex;
+  }
+
+  function getMathBlockState(trimmedLine, inMathBlock) {
+    if (!trimmedLine) {
+      return {
+        started: false,
+        ended: false,
+      };
+    }
+
+    const startsDollarBlock = trimmedLine.startsWith("$$");
+    const endsDollarBlock = trimmedLine.endsWith("$$") && trimmedLine.length > 2;
+    const startsBracketBlock = trimmedLine.startsWith("\\[");
+    const endsBracketBlock = trimmedLine.endsWith("\\]") && trimmedLine.length > 2;
+
+    if (inMathBlock) {
+      return {
+        started: false,
+        ended:
+          trimmedLine === "$$" ||
+          trimmedLine === "\\]" ||
+          endsDollarBlock ||
+          endsBracketBlock,
+      };
+    }
+
+    return {
+      started:
+        (startsDollarBlock && !endsDollarBlock) ||
+        (startsBracketBlock && !endsBracketBlock),
+      ended:
+        (startsDollarBlock && endsDollarBlock) ||
+        (startsBracketBlock && endsBracketBlock),
+    };
   }
 
   function clearPendingStatusTimer() {
@@ -1125,6 +1753,7 @@
               id: `assistant-starter-${Date.now()}`,
               role: "assistant",
               content: "",
+              isStreaming: true,
             };
             state.messages = [assistantMessage];
           }
@@ -1132,7 +1761,7 @@
           state.isStartingConversation = false;
           state.starterStatus = "";
           assistantMessage.content += delta;
-          renderMessages();
+          scheduleStreamingRender(assistantMessage);
           return;
         }
 
@@ -1143,6 +1772,10 @@
 
       state.isStartingConversation = false;
       state.starterStatus = "";
+      if (assistantMessage) {
+        assistantMessage.isStreaming = false;
+      }
+      flushStreamingRender(assistantMessage);
       await refreshConversations();
       renderHistoryMenu();
       return conversation;
@@ -1163,6 +1796,9 @@
     } finally {
       state.isStartingConversation = false;
       state.starterStatus = "";
+      if (assistantMessage) {
+        assistantMessage.isStreaming = false;
+      }
       elements.newChatButton.disabled = false;
       elements.chatSubmit.disabled = false;
       renderMessages();
@@ -1234,6 +1870,7 @@
             role: "assistant",
             content: "",
             citations: [],
+            isStreaming: true,
           };
           state.messages.push(assistantMessage);
         }
@@ -1242,7 +1879,7 @@
         state.hasAssistantToken = true;
         state.pendingStatus = "";
         assistantMessage.content += delta;
-        renderMessages();
+        scheduleStreamingRender(assistantMessage);
         return;
       }
 
@@ -1255,7 +1892,7 @@
             assistantMessage.content,
             assistantMessage.citations,
           );
-          renderMessages();
+          scheduleStreamingRender(assistantMessage);
         }
         return;
       }
@@ -1264,6 +1901,11 @@
         throw new Error(data.message || "chat stream error");
       }
     });
+
+    if (assistantMessage) {
+      assistantMessage.isStreaming = false;
+      flushStreamingRender(assistantMessage);
+    }
   }
 
   async function fetchCourseNote(courseId) {

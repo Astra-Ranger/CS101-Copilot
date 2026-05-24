@@ -538,14 +538,20 @@ class CourseRAGService:
             yield delta
 
     async def _complete_task(self, task: str, messages: list[dict[str, Any]]) -> dict[str, Any]:
-        return await self.chat_client.complete(self.models.for_task(task), messages)
+        return await self.chat_client.complete_with_fallback(
+            self.models.for_task_chain(task),
+            messages,
+        )
 
     async def _stream_task(
         self,
         task: str,
         messages: list[dict[str, Any]],
     ) -> AsyncIterator[str]:
-        async for delta in self.chat_client.stream(self.models.for_task(task), messages):
+        async for delta in self.chat_client.stream_with_fallback(
+            self.models.for_task_chain(task),
+            messages,
+        ):
             yield delta
 
     def _build_answer_messages(

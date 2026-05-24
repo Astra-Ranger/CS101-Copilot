@@ -79,6 +79,9 @@ vector_store/
 *.pem
 *.key
 
+# 本地单用户聊天记录
+backend/chat_conversations.json
+
 # ========================================
 # 6. IDE 与编辑器 (IDE & Editors)
 # ========================================

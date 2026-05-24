@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-import os
+import logging
 from dataclasses import dataclass
 from typing import Any, AsyncIterator
 
@@ -10,20 +10,17 @@ import httpx
 from backend.config_loader import load_json_config
 
 
+logger = logging.getLogger(__name__)
+
+
 @dataclass(frozen=True)
 class ChatModelConfig:
+    name: str
     base_url: str
     chat_path: str
     api_key: str
     model: str
     enable_thinking: bool
-
-
-def env_bool(name: str, default: bool) -> bool:
-    value = os.getenv(name)
-    if value is None:
-        return default
-    return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
 class ModelRegistry:
@@ -37,10 +34,15 @@ class ModelRegistry:
         self.providers = self.models_config.get("providers", {})
 
     def for_task(self, task: str) -> ChatModelConfig:
-        provider_name = self.tasks.get(task)
-        if not provider_name:
+        return self.for_task_chain(task)[0]
+
+    def for_task_chain(self, task: str) -> list[ChatModelConfig]:
+        task_config = self.tasks.get(task)
+        provider_names = self._task_provider_names(task_config)
+        if not provider_names:
             raise KeyError(f"Model task is not configured: {task}")
-        return self.provider(provider_name)
+
+        return [self.provider(provider_name) for provider_name in provider_names]
 
     def provider(self, name: str) -> ChatModelConfig:
         provider = self.providers.get(name)
@@ -48,18 +50,81 @@ class ModelRegistry:
             raise KeyError(f"Model provider is not configured: {name}")
 
         return ChatModelConfig(
-            base_url=os.getenv(provider["base_url_env"], provider["base_url"]).rstrip("/"),
-            chat_path=os.getenv(provider["chat_path_env"], provider["chat_path"]),
-            api_key=os.getenv(provider["api_key_env"], provider["api_key"]),
-            model=os.getenv(provider["model_env"], provider["model"]),
-            enable_thinking=env_bool(
-                provider["enable_thinking_env"],
-                bool(provider.get("enable_thinking", False)),
-            ),
+            name=name,
+            base_url=str(provider["base_url"]).rstrip("/"),
+            chat_path=str(provider["chat_path"]),
+            api_key=str(provider["api_key"]),
+            model=str(provider["model"]),
+            enable_thinking=bool(provider.get("enable_thinking", False)),
         )
+
+    def _task_provider_names(self, task_config: Any) -> list[str]:
+        if isinstance(task_config, str):
+            return [task_config]
+
+        if not isinstance(task_config, dict):
+            return []
+
+        names: list[str] = []
+        primary = task_config.get("primary")
+        if isinstance(primary, str) and primary:
+            names.append(primary)
+
+        fallback = task_config.get("fallback")
+        if isinstance(fallback, str) and fallback:
+            names.append(fallback)
+        elif isinstance(fallback, list):
+            names.extend(item for item in fallback if isinstance(item, str) and item)
+
+        return names
 
 
 class ChatModelClient:
+    async def complete_with_fallback(
+        self,
+        model_configs: list[ChatModelConfig],
+        messages: list[dict[str, Any]],
+        stream: bool = False,
+    ) -> dict[str, Any]:
+        last_exc: Exception | None = None
+
+        for model_config in model_configs:
+            try:
+                return await self.complete(model_config, messages, stream=stream)
+            except Exception as exc:
+                last_exc = exc
+                logger.warning("Model provider %s failed, trying fallback: %s", model_config.name, exc)
+
+        if last_exc:
+            raise last_exc
+
+        raise RuntimeError("No model provider configured")
+
+    async def stream_with_fallback(
+        self,
+        model_configs: list[ChatModelConfig],
+        messages: list[dict[str, Any]],
+    ) -> AsyncIterator[str]:
+        last_exc: Exception | None = None
+
+        for model_config in model_configs:
+            emitted = False
+            try:
+                async for delta in self.stream(model_config, messages):
+                    emitted = True
+                    yield delta
+                return
+            except Exception as exc:
+                if emitted:
+                    raise
+                last_exc = exc
+                logger.warning("Model provider %s failed before streaming, trying fallback: %s", model_config.name, exc)
+
+        if last_exc:
+            raise last_exc
+
+        raise RuntimeError("No model provider configured")
+
     async def complete(
         self,
         model_config: ChatModelConfig,
