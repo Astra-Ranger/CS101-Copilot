@@ -16,6 +16,10 @@
       courses: staticManifest.courses || [],
     },
     currentDeck: null,
+    activeNotebookId: null,
+    activeNotebook: null,
+    notebooks: [],
+    isNotebookModalOpen: false,
     messages: defaultChatMessages(),
     activeConversationId: null,
     conversations: [],
@@ -30,7 +34,8 @@
     hasAssistantToken: false,
     lastChatMetadata: null,
     saveTimer: null,
-    saveMode: getInitialSaveMode(),
+    noteRenderFrame: null,
+    isComposingNote: false,
     hasUnsavedNote: false,
   };
 
@@ -46,11 +51,19 @@
     newChatButton: document.querySelector("#new-chat-button"),
     chatHistoryButton: document.querySelector("#chat-history-button"),
     chatHistoryMenu: document.querySelector("#chat-history-menu"),
+    notebookTitle: document.querySelector("#notebook-title"),
     noteEditor: document.querySelector("#note-editor"),
+    notebookMenu: document.querySelector("#notebook-menu"),
+    newNotebookButton: document.querySelector("#new-notebook-button"),
+    notebookListButton: document.querySelector("#notebook-list-button"),
+    exportNotebookButton: document.querySelector("#export-notebook-button"),
+    formulaButton: document.querySelector("#formula-button"),
+    formulaModal: document.querySelector("#formula-modal"),
+    formulaInput: document.querySelector("#formula-input"),
+    formulaConfirmButton: document.querySelector("#formula-confirm-button"),
+    formulaCancelButton: document.querySelector("#formula-cancel-button"),
+    formulaCancelIcon: document.querySelector("#formula-cancel-icon"),
     saveState: document.querySelector("#save-state"),
-    autoSaveMode: document.querySelector("#auto-save-mode"),
-    manualSaveMode: document.querySelector("#manual-save-mode"),
-    manualSaveButton: document.querySelector("#manual-save-button"),
   };
 
   const slidePointers = new Map();
@@ -58,6 +71,7 @@
   const MAX_SLIDE_ZOOM = 2.6;
   const SLIDE_WHEEL_ZOOM_STEP = 0.08;
   const STATUS_MIN_VISIBLE_MS = 500;
+  const LAST_NOTEBOOK_KEY = "cs101-last-notebook-id";
   const MATHJAX_CDN_URL = "https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js";
   const MATHJAX_LOCAL_URL = "/vendor/mathjax/tex-mml-chtml.js";
   let mathTypesetInFlight = false;
@@ -89,12 +103,6 @@
     return "demo-course";
   }
 
-  function getInitialSaveMode() {
-    return window.localStorage.getItem("cs101-note-save-mode") === "manual"
-      ? "manual"
-      : "auto";
-  }
-
   function defaultChatMessages() {
     return [];
   }
@@ -110,10 +118,6 @@
       state.courseIndex.courses[0] ||
       null
     );
-  }
-
-  function getStorageKey() {
-    return `cs101-note:${resolveCourseId(state.currentCourseId)}`;
   }
 
   function encodePathSegments(segments) {
@@ -544,16 +548,30 @@
     return fallback;
   }
 
-  function appendAssistantMarkdown(container, markdown, citationDisplayMap) {
+  function appendMarkdown(container, markdown, citationDisplayMap, options = {}) {
     container.classList.add("message-markdown");
 
     const lines = String(markdown || "").replace(/\r\n/g, "\n").split("\n");
     let index = 0;
+    const headingOffset = Number.isInteger(options.headingOffset)
+      ? options.headingOffset
+      : 2;
+    const preserveBlankLines = Boolean(options.preserveBlankLines);
+    const inlineOptions = {
+      disableCitations: Boolean(options.disableCitations),
+    };
 
     while (index < lines.length) {
       const line = lines[index];
 
       if (!line.trim()) {
+        if (preserveBlankLines) {
+          const blank = document.createElement("p");
+          blank.className = "markdown-blank-line";
+          blank.append(document.createElement("br"));
+          container.append(blank);
+        }
+
         index += 1;
         continue;
       }
@@ -588,8 +606,9 @@
 
       const headingMatch = line.match(/^(#{1,4})\s+(.+)$/);
       if (headingMatch) {
-        const heading = document.createElement(`h${headingMatch[1].length + 2}`);
-        appendInlineMarkdown(heading, headingMatch[2].trim(), citationDisplayMap);
+        const headingLevel = Math.min(6, Math.max(1, headingMatch[1].length + headingOffset));
+        const heading = document.createElement(`h${headingLevel}`);
+        appendInlineMarkdown(heading, headingMatch[2].trim(), citationDisplayMap, inlineOptions);
         container.append(heading);
         index += 1;
         continue;
@@ -609,7 +628,7 @@
 
         splitTableRow(lines[index]).forEach((cell) => {
           const th = document.createElement("th");
-          appendInlineMarkdown(th, cell, citationDisplayMap);
+          appendInlineMarkdown(th, cell, citationDisplayMap, inlineOptions);
           headerRow.append(th);
         });
 
@@ -621,7 +640,7 @@
           const row = document.createElement("tr");
           splitTableRow(lines[index]).forEach((cell) => {
             const td = document.createElement("td");
-            appendInlineMarkdown(td, cell, citationDisplayMap);
+            appendInlineMarkdown(td, cell, citationDisplayMap, inlineOptions);
             row.append(td);
           });
           tbody.append(row);
@@ -642,7 +661,7 @@
           index += 1;
         }
 
-        appendInlineMarkdown(blockquote, quoteLines.join("\n"), citationDisplayMap);
+        appendInlineMarkdown(blockquote, quoteLines.join("\n"), citationDisplayMap, inlineOptions);
         container.append(blockquote);
         continue;
       }
@@ -660,7 +679,7 @@
           }
 
           const item = document.createElement("li");
-          appendInlineMarkdown(item, itemMatch[3], citationDisplayMap);
+          appendInlineMarkdown(item, itemMatch[3], citationDisplayMap, inlineOptions);
           list.append(item);
           index += 1;
         }
@@ -680,8 +699,13 @@
         index += 1;
       }
 
+      if (!paragraphLines.length) {
+        paragraphLines.push(line);
+        index += 1;
+      }
+
       const paragraph = document.createElement("p");
-      appendInlineMarkdown(paragraph, paragraphLines.join("\n"), citationDisplayMap);
+      appendInlineMarkdown(paragraph, paragraphLines.join("\n"), citationDisplayMap, inlineOptions);
       container.append(paragraph);
     }
   }
@@ -693,7 +717,7 @@
       /^(#{1,4})\s+/.test(line) ||
       /^\s*(-{3,}|\*{3,}|_{3,})\s*$/.test(line) ||
       /^>\s?/.test(line) ||
-      /^(\s*)([-*+]|\d+[.)])\s+/.test(line) ||
+      /^(\s*)([-*+]|\d+[.)])\s+.+/.test(line) ||
       isTableStart(lines, index)
     );
   }
@@ -719,7 +743,7 @@
       .map((cell) => cell.trim());
   }
 
-  function appendInlineMarkdown(container, text, citationDisplayMap) {
+  function appendInlineMarkdown(container, text, citationDisplayMap, options = {}) {
     const source = String(text || "");
     const token = findNextInlineToken(source);
 
@@ -733,7 +757,11 @@
     if (token.type === "math") {
       appendPlainText(container, token.fullText);
     } else if (token.type === "citation") {
-      appendCitationToken(container, token.fullText, token.value, citationDisplayMap);
+      if (options.disableCitations) {
+        appendPlainText(container, token.fullText);
+      } else {
+        appendCitationToken(container, token.fullText, token.value, citationDisplayMap);
+      }
     } else if (token.type === "code") {
       const code = document.createElement("code");
       code.textContent = token.value;
@@ -743,11 +771,11 @@
       anchor.href = safeMarkdownHref(token.href);
       anchor.rel = "noreferrer";
       anchor.target = "_blank";
-      appendInlineMarkdown(anchor, token.value, citationDisplayMap);
+      appendInlineMarkdown(anchor, token.value, citationDisplayMap, options);
       container.append(anchor);
     } else {
       const element = document.createElement(token.type === "bold" ? "strong" : "em");
-      appendInlineMarkdown(element, token.value, citationDisplayMap);
+      appendInlineMarkdown(element, token.value, citationDisplayMap, options);
       container.append(element);
     }
 
@@ -755,6 +783,7 @@
       container,
       source.slice(token.index + token.fullText.length),
       citationDisplayMap,
+      options,
     );
   }
 
@@ -1136,6 +1165,125 @@
     elements.chatHistoryMenu.append(dialog);
   }
 
+  function notebookSummaryFromNotebook(notebook) {
+    const content = String(notebook.content || "");
+    return {
+      id: notebook.id,
+      title: notebook.title || "未命名笔记",
+      createdAt: notebook.createdAt,
+      updatedAt: notebook.updatedAt,
+      contentSavedAt: notebook.contentSavedAt,
+      titleGeneratedAt: notebook.titleGeneratedAt,
+      contentLength: content.trim().length,
+      preview: content.replace(/\s+/g, " ").trim().slice(0, 80),
+    };
+  }
+
+  function syncNotebookSummary(notebook) {
+    if (!notebook || !notebook.id) {
+      return;
+    }
+
+    const summary = notebookSummaryFromNotebook(notebook);
+    const index = state.notebooks.findIndex((item) => item.id === notebook.id);
+
+    if (index >= 0) {
+      state.notebooks[index] = summary;
+    } else {
+      state.notebooks.push(summary);
+    }
+
+    state.notebooks.sort((left, right) =>
+      String(right.updatedAt || right.createdAt || "").localeCompare(
+        String(left.updatedAt || left.createdAt || ""),
+      ),
+    );
+  }
+
+  function renderNotebookMenu() {
+    elements.notebookMenu.innerHTML = "";
+    elements.notebookMenu.hidden = !state.isNotebookModalOpen;
+
+    if (!state.isNotebookModalOpen) {
+      return;
+    }
+
+    const dialog = document.createElement("div");
+    dialog.className = "chat-history-dialog";
+
+    const header = document.createElement("div");
+    header.className = "chat-history-dialog-header";
+
+    const title = document.createElement("div");
+    title.className = "chat-history-dialog-title";
+    title.textContent = "笔记本";
+
+    const closeButton = document.createElement("button");
+    closeButton.type = "button";
+    closeButton.className = "chat-history-close";
+    closeButton.setAttribute("aria-label", "关闭笔记本列表");
+    closeButton.textContent = "×";
+    closeButton.addEventListener("click", () => {
+      state.isNotebookModalOpen = false;
+      renderNotebookMenu();
+    });
+
+    header.append(title, closeButton);
+    dialog.append(header);
+
+    if (!state.notebooks.length) {
+      const empty = document.createElement("div");
+      empty.className = "chat-history-empty";
+      empty.textContent = "暂无笔记本";
+      dialog.append(empty);
+      elements.notebookMenu.append(dialog);
+      return;
+    }
+
+    state.notebooks.forEach((notebook) => {
+      const item = document.createElement("div");
+      item.className = "chat-history-item";
+      item.classList.toggle("active", notebook.id === state.activeNotebookId);
+
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "chat-history-open";
+
+      const notebookTitle = document.createElement("span");
+      notebookTitle.className = "chat-history-title";
+      notebookTitle.textContent = notebook.title || "未命名笔记";
+
+      const meta = document.createElement("span");
+      meta.className = "chat-history-meta";
+      meta.textContent = `${formatConversationTime(notebook.updatedAt) || "刚刚"} · ${
+        notebook.contentLength || 0
+      } 字`;
+
+      const preview = document.createElement("span");
+      preview.className = "notebook-preview-text";
+      preview.textContent = notebook.preview || "空笔记本";
+
+      button.append(notebookTitle, meta, preview);
+      button.addEventListener("click", () => {
+        void loadNotebook(notebook.id);
+      });
+
+      const deleteButton = document.createElement("button");
+      deleteButton.type = "button";
+      deleteButton.className = "chat-history-delete";
+      deleteButton.setAttribute("aria-label", "删除笔记本");
+      deleteButton.textContent = "×";
+      deleteButton.addEventListener("click", () => {
+        void removeNotebook(notebook.id);
+      });
+
+      item.append(button, deleteButton);
+      dialog.append(item);
+    });
+
+    elements.notebookMenu.append(dialog);
+  }
+
   function renderMessages(options = {}) {
     const shouldTypesetMath = options.typesetMath !== false;
     const shouldCompileStreaming = options.compileStreaming === true;
@@ -1156,7 +1304,7 @@
         if (message.isStreaming && !shouldCompileStreaming) {
           appendPlainText(bubble, message.content);
         } else {
-          appendAssistantMarkdown(
+          appendMarkdown(
             bubble,
             message.content,
             buildCitationDisplayMap(message.content),
@@ -1342,7 +1490,7 @@
       const stableText = content.slice(view.committedLength, stableEnd);
       const block = document.createElement("div");
       block.className = "streaming-block";
-      appendAssistantMarkdown(
+      appendMarkdown(
         block,
         stableText,
         buildCitationDisplayMap(content),
@@ -1671,7 +1819,6 @@
           "",
           `/course/${encodeURIComponent(state.currentCourseId)}`,
         );
-        await initNotes();
         await loadCurrentCourse();
         await refreshConversations();
       }
@@ -1908,29 +2055,65 @@
     }
   }
 
-  async function fetchCourseNote(courseId) {
-    const response = await fetch(`/api/notes/${encodeURIComponent(courseId)}`, {
+  async function fetchNotebooks() {
+    const response = await fetch("/api/notebooks", {
       cache: "no-store",
     });
 
     if (!response.ok) {
-      throw new Error("note api unavailable");
+      throw new Error("notebook api unavailable");
     }
 
     return response.json();
   }
 
-  async function saveUserNote(courseId, content) {
-    const response = await fetch(`/api/notes/${encodeURIComponent(courseId)}`, {
+  async function createNotebook() {
+    const response = await fetch("/api/notebooks", {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({ content }),
     });
 
     if (!response.ok) {
-      throw new Error("note save api unavailable");
+      throw new Error("create notebook api unavailable");
+    }
+
+    return response.json();
+  }
+
+  async function fetchNotebook(notebookId) {
+    const response = await fetch(`/api/notebooks/${encodeURIComponent(notebookId)}`, {
+      cache: "no-store",
+    });
+
+    if (!response.ok) {
+      throw new Error("notebook detail api unavailable");
+    }
+
+    return response.json();
+  }
+
+  async function saveNotebook(notebookId, content, forceTitle = false) {
+    const response = await fetch(`/api/notebooks/${encodeURIComponent(notebookId)}`, {
+      method: "PUT",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ content, forceTitle }),
+    });
+
+    if (!response.ok) {
+      throw new Error("notebook save api unavailable");
+    }
+
+    return response.json();
+  }
+
+  async function deleteNotebook(notebookId) {
+    const response = await fetch(`/api/notebooks/${encodeURIComponent(notebookId)}`, {
+      method: "DELETE",
+    });
+
+    if (!response.ok) {
+      throw new Error("notebook delete api unavailable");
     }
 
     return response.json();
@@ -1946,7 +2129,6 @@
       "",
       `/course/${encodeURIComponent(state.currentCourseId)}`,
     );
-    await initNotes();
     await loadCurrentCourse();
     await loadLatestConversationForCurrentCourse();
   }
@@ -1967,7 +2149,6 @@
       "",
       `/course/${encodeURIComponent(state.currentCourseId)}`,
     );
-    await initNotes();
     await loadCurrentCourse();
     setActiveSlidePage(targetPage);
   }
@@ -2053,33 +2234,84 @@
     elements.saveState.classList.toggle("error", Boolean(isError));
   }
 
-  function renderSaveMode() {
-    const isManual = state.saveMode === "manual";
-
-    elements.autoSaveMode.classList.toggle("active", !isManual);
-    elements.manualSaveMode.classList.toggle("active", isManual);
-    elements.manualSaveButton.hidden = !isManual;
-    elements.manualSaveButton.disabled = !state.hasUnsavedNote;
+  function renderNoteHeader() {
+    elements.notebookTitle.textContent =
+      (state.activeNotebook && state.activeNotebook.title) || "课程笔记";
+    elements.exportNotebookButton.disabled = !state.activeNotebookId;
   }
 
-  function setSaveMode(mode) {
-    state.saveMode = mode === "manual" ? "manual" : "auto";
-    window.localStorage.setItem("cs101-note-save-mode", state.saveMode);
+  function renderNoteEditor(options = {}) {
+    const selectionRange =
+      options.selectionRange || (options.restoreSelection ? getNoteSelectionRange() : null);
+    const shouldRefocus = options.keepFocus && document.activeElement === elements.noteEditor;
 
-    if (state.saveTimer) {
-      window.clearTimeout(state.saveTimer);
-      state.saveTimer = null;
+    renderNoteHeader();
+    elements.noteEditor.dataset.rawMode = "false";
+    elements.noteEditor.innerHTML = "";
+
+    if (state.noteContent.trim()) {
+      appendMarkdown(
+        elements.noteEditor,
+        state.noteContent,
+        null,
+        {
+          disableCitations: true,
+          headingOffset: 0,
+          preserveBlankLines: true,
+        },
+      );
     }
 
-    renderSaveMode();
+    if (shouldRefocus) {
+      elements.noteEditor.focus();
+    }
 
-    if (state.saveMode === "auto" && state.hasUnsavedNote) {
-      scheduleAutoSaveNote();
+    if (selectionRange) {
+      setNoteSelectionRange(selectionRange.start, selectionRange.end);
     }
   }
 
-  async function saveCurrentNote() {
-    const courseId = state.currentCourseId;
+  function scheduleNoteMarkdownRender(selectionRange) {
+    if (state.isComposingNote) {
+      return;
+    }
+
+    if (state.noteRenderFrame) {
+      window.cancelAnimationFrame(state.noteRenderFrame);
+    }
+
+    state.noteRenderFrame = window.requestAnimationFrame(() => {
+      state.noteRenderFrame = null;
+      renderNoteEditor({
+        restoreSelection: true,
+        keepFocus: true,
+        selectionRange,
+      });
+    });
+  }
+
+  function prepareNoteSourceEditing() {
+    if (elements.noteEditor.dataset.rawMode === "true") {
+      return;
+    }
+
+    elements.noteEditor.dataset.rawMode = "true";
+    elements.noteEditor.textContent = state.noteContent;
+    elements.noteEditor.focus();
+    setNoteSelectionRange(state.noteContent.length, state.noteContent.length);
+  }
+
+  async function saveCurrentNote(options = {}) {
+    if (!state.activeNotebookId) {
+      await ensureActiveNotebook();
+    }
+
+    if (!state.activeNotebookId) {
+      updateSaveState("保存失败", true);
+      return;
+    }
+
+    const notebookId = state.activeNotebookId;
     const content = state.noteContent;
 
     if (state.saveTimer) {
@@ -2088,24 +2320,41 @@
     }
 
     updateSaveState("保存中", false);
-    elements.manualSaveButton.disabled = true;
 
     try {
-      await saveUserNote(courseId, content);
-      console.log("笔记已保存");
+      const result = await saveNotebook(
+        notebookId,
+        content,
+        Boolean(options.forceTitle),
+      );
 
-      if (courseId === state.currentCourseId) {
-        state.hasUnsavedNote = false;
-        updateSaveState("已保存", false);
-        renderSaveMode();
+      if (notebookId !== state.activeNotebookId) {
+        return;
+      }
+
+      if (!result.saved) {
+        state.hasUnsavedNote = true;
+        updateSaveState("未保存", false);
+        return;
+      }
+
+      state.activeNotebook = result.notebook;
+      state.noteContent = result.notebook.content || content;
+      state.hasUnsavedNote = false;
+      syncNotebookSummary(result.notebook);
+      renderNoteHeader();
+      renderNotebookMenu();
+      updateSaveState(result.titleUpdated ? "已保存，标题已更新" : "已保存", false);
+
+      if (elements.noteEditor.dataset.rawMode !== "true") {
+        renderNoteEditor();
       }
     } catch (error) {
       console.error(error);
 
-      if (courseId === state.currentCourseId) {
+      if (notebookId === state.activeNotebookId) {
         state.hasUnsavedNote = true;
         updateSaveState("保存失败", true);
-        renderSaveMode();
       }
     }
   }
@@ -2117,33 +2366,64 @@
 
     state.saveTimer = window.setTimeout(() => {
       void saveCurrentNote();
-    }, 2000);
+    }, 1800);
   }
 
-  function handleNoteInput(event) {
-    state.noteContent = event.target.value;
-    window.localStorage.setItem(getStorageKey(), state.noteContent);
-    state.hasUnsavedNote = true;
-    updateSaveState("未保存", false);
-    renderSaveMode();
+  function setNoteContent(content, options = {}) {
+    const changed = content !== state.noteContent;
+    state.noteContent = content;
 
-    if (state.saveTimer) {
-      window.clearTimeout(state.saveTimer);
-      state.saveTimer = null;
+    if (changed) {
+      state.hasUnsavedNote = true;
+      updateSaveState("未保存", false);
     }
 
-    if (state.saveMode === "auto") {
+    if (changed && options.scheduleSave !== false) {
       scheduleAutoSaveNote();
     }
   }
 
-  function handleSaveModeClick(event) {
-    const mode = event.currentTarget.dataset.saveMode;
-    setSaveMode(mode);
+  function handleNoteInput(event) {
+    const selectionRange = getNoteSelectionRange();
+    setNoteContent(getNoteEditorMarkdown());
+    scheduleNoteMarkdownRender(selectionRange);
   }
 
-  function handleManualSaveClick() {
-    void saveCurrentNote();
+  function handleNoteFocus() {
+    elements.noteEditor.dataset.rawMode = "false";
+  }
+
+  function handleNoteBlur() {
+    setNoteContent(getNoteEditorMarkdown(), { scheduleSave: false });
+    renderNoteEditor();
+  }
+
+  function handleNoteCompositionStart() {
+    state.isComposingNote = true;
+  }
+
+  function handleNoteCompositionEnd() {
+    state.isComposingNote = false;
+    handleNoteInput();
+  }
+
+  function handleNotebookListClick() {
+    state.isNotebookModalOpen = !state.isNotebookModalOpen;
+    renderNotebookMenu();
+  }
+
+  function handleNewNotebookClick() {
+    void startNewNotebook();
+  }
+
+  function handleExportNotebookClick() {
+    if (!state.activeNotebookId) {
+      return;
+    }
+
+    window.location.href = `/api/notebooks/${encodeURIComponent(
+      state.activeNotebookId,
+    )}/export`;
   }
 
   function handleHistoryClick() {
@@ -2155,39 +2435,480 @@
     void startNewConversation();
   }
 
+  function applyNotebook(notebook) {
+    state.activeNotebookId = notebook.id || null;
+    state.activeNotebook = notebook;
+    state.noteContent = notebook.content || "";
+    state.hasUnsavedNote = false;
+    state.isNotebookModalOpen = false;
+    window.localStorage.setItem(LAST_NOTEBOOK_KEY, state.activeNotebookId || "");
+    updateSaveState(notebook.contentSavedAt ? "已保存" : "未保存", false);
+    syncNotebookSummary(notebook);
+    renderNoteEditor();
+    renderNotebookMenu();
+  }
+
+  async function refreshNotebooks() {
+    try {
+      const data = await fetchNotebooks();
+      state.notebooks = Array.isArray(data.notebooks) ? data.notebooks : [];
+    } catch (error) {
+      console.warn("读取笔记本列表失败。", error);
+      state.notebooks = [];
+    }
+
+    renderNotebookMenu();
+  }
+
+  async function loadNotebook(notebookId, options = {}) {
+    try {
+      const data = await fetchNotebook(notebookId);
+
+      if (!data.notebook) {
+        throw new Error("notebook missing");
+      }
+
+      applyNotebook(data.notebook);
+
+      if (options.keepModalOpen) {
+        state.isNotebookModalOpen = true;
+        renderNotebookMenu();
+      }
+    } catch (error) {
+      console.error(error);
+      updateSaveState("读取失败", true);
+    }
+  }
+
+  async function startNewNotebook() {
+    if (state.saveTimer) {
+      window.clearTimeout(state.saveTimer);
+      state.saveTimer = null;
+    }
+
+    try {
+      const data = await createNotebook();
+
+      if (!data.notebook) {
+        throw new Error("notebook missing");
+      }
+
+      applyNotebook(data.notebook);
+      await refreshNotebooks();
+      updateSaveState("未保存", false);
+      return data.notebook;
+    } catch (error) {
+      console.error(error);
+      updateSaveState("新建失败", true);
+      return null;
+    }
+  }
+
+  async function ensureActiveNotebook() {
+    if (state.activeNotebookId) {
+      return state.activeNotebook;
+    }
+
+    return startNewNotebook();
+  }
+
+  async function removeNotebook(notebookId) {
+    try {
+      await deleteNotebook(notebookId);
+      await refreshNotebooks();
+
+      if (notebookId !== state.activeNotebookId) {
+        return;
+      }
+
+      state.activeNotebookId = null;
+      state.activeNotebook = null;
+      state.noteContent = "";
+
+      if (state.notebooks.length) {
+        await loadNotebook(state.notebooks[0].id, { keepModalOpen: true });
+      } else {
+        await startNewNotebook();
+        state.isNotebookModalOpen = true;
+        renderNotebookMenu();
+      }
+    } catch (error) {
+      console.error(error);
+      updateSaveState("删除失败", true);
+    }
+  }
+
   async function initNotes() {
     if (state.saveTimer) {
       window.clearTimeout(state.saveTimer);
       state.saveTimer = null;
     }
 
-    const storageKey = getStorageKey();
-    const localNote = window.localStorage.getItem(storageKey) || "";
-    state.noteContent = localNote;
-    elements.noteEditor.value = localNote;
     updateSaveState("读取中", false);
+    await refreshNotebooks();
 
-    try {
-      const note = await fetchCourseNote(state.currentCourseId);
-      const hasServerNote = Boolean(note.savedAt);
+    const lastNotebookId = window.localStorage.getItem(LAST_NOTEBOOK_KEY);
+    const targetNotebook =
+      state.notebooks.find((notebook) => notebook.id === lastNotebookId) ||
+      state.notebooks[0];
 
-      if (hasServerNote) {
-        state.noteContent = note.content || "";
-        elements.noteEditor.value = state.noteContent;
-        window.localStorage.setItem(storageKey, state.noteContent);
-        state.hasUnsavedNote = false;
-        updateSaveState("已保存", false);
-      } else {
-        state.hasUnsavedNote = Boolean(localNote);
-        updateSaveState(localNote ? "本地草稿" : "未保存", false);
-      }
-    } catch (error) {
-      console.warn("使用本地笔记作为回退。", error);
-      state.hasUnsavedNote = Boolean(localNote);
-      updateSaveState(localNote ? "本地草稿" : "未保存", false);
+    if (targetNotebook) {
+      await loadNotebook(targetNotebook.id, { keepModalOpen: false });
+      return;
     }
 
-    renderSaveMode();
+    await startNewNotebook();
+  }
+
+  function getNoteEditorText() {
+    return String(elements.noteEditor.innerText || elements.noteEditor.textContent || "")
+      .replace(/\u00a0/g, " ")
+      .replace(/\n{3,}/g, "\n\n");
+  }
+
+  function getNoteEditorMarkdown() {
+    if (elements.noteEditor.dataset.rawMode === "true") {
+      return normalizeSerializedMarkdown(elements.noteEditor.textContent || "");
+    }
+
+    return normalizeSerializedMarkdown(serializeMarkdownBlocks(elements.noteEditor));
+  }
+
+  function serializeMarkdownBlocks(container) {
+    const blocks = Array.from(container.childNodes)
+      .map((node) => serializeMarkdownBlock(node))
+      .filter((value) => value.length > 0);
+
+    return blocks.reduce((output, block) => {
+      if (block === "\n") {
+        return `${output}\n`;
+      }
+
+      if (!output) {
+        return block;
+      }
+
+      return output.endsWith("\n\n")
+        ? `${output}${block}`
+        : `${output}${output.endsWith("\n") ? "\n" : "\n\n"}${block}`;
+    }, "");
+  }
+
+  function serializeMarkdownBlock(node) {
+    if (node.nodeType === Node.TEXT_NODE) {
+      return normalizeEditorText(node.textContent || "");
+    }
+
+    if (node.nodeType !== Node.ELEMENT_NODE) {
+      return "";
+    }
+
+    const element = node;
+    const tagName = element.tagName.toLowerCase();
+
+    if (/^h[1-6]$/.test(tagName)) {
+      const level = Math.min(6, Math.max(1, Number(tagName.slice(1))));
+      return `${"#".repeat(level)} ${serializeMarkdownInlineChildren(element).trim()}`;
+    }
+
+    if (tagName === "pre") {
+      const code = element.querySelector("code");
+      return `\`\`\`\n${normalizeEditorText((code || element).textContent || "")}\n\`\`\``;
+    }
+
+    if (tagName === "ul" || tagName === "ol") {
+      return Array.from(element.children)
+        .filter((child) => child.tagName.toLowerCase() === "li")
+        .map((child, index) => {
+          const prefix = tagName === "ol" ? `${index + 1}. ` : "- ";
+          return `${prefix}${serializeMarkdownInlineChildren(child).trim()}`;
+        })
+        .join("\n");
+    }
+
+    if (tagName === "blockquote") {
+      return serializeMarkdownInlineChildren(element)
+        .split("\n")
+        .map((line) => `> ${line}`)
+        .join("\n");
+    }
+
+    if (tagName === "table") {
+      return serializeMarkdownTable(element);
+    }
+
+    if (tagName === "br") {
+      return "\n";
+    }
+
+    return trimInlineWhitespace(serializeMarkdownInlineChildren(element));
+  }
+
+  function serializeMarkdownInlineChildren(element) {
+    return Array.from(element.childNodes)
+      .map((node) => serializeMarkdownInline(node))
+      .join("");
+  }
+
+  function serializeMarkdownInline(node) {
+    if (node.nodeType === Node.TEXT_NODE) {
+      return normalizeEditorText(node.textContent || "");
+    }
+
+    if (node.nodeType !== Node.ELEMENT_NODE) {
+      return "";
+    }
+
+    const element = node;
+    const tagName = element.tagName.toLowerCase();
+
+    if (tagName === "br") {
+      return "\n";
+    }
+
+    if (tagName === "strong" || tagName === "b") {
+      return `**${serializeMarkdownInlineChildren(element)}**`;
+    }
+
+    if (tagName === "em" || tagName === "i") {
+      return `*${serializeMarkdownInlineChildren(element)}*`;
+    }
+
+    if (tagName === "code") {
+      return `\`${normalizeEditorText(element.textContent || "")}\``;
+    }
+
+    if (tagName === "a") {
+      const text = serializeMarkdownInlineChildren(element);
+      const href = element.getAttribute("href") || "";
+      return href ? `[${text}](${href})` : text;
+    }
+
+    return serializeMarkdownInlineChildren(element);
+  }
+
+  function serializeMarkdownTable(table) {
+    const rows = Array.from(table.querySelectorAll("tr")).map((row) =>
+      Array.from(row.children).map((cell) => serializeMarkdownInlineChildren(cell).trim()),
+    );
+
+    if (!rows.length) {
+      return "";
+    }
+
+    const header = rows[0];
+    const divider = header.map(() => "---");
+    const body = rows.slice(1);
+    return [header, divider, ...body]
+      .map((row) => `| ${row.join(" | ")} |`)
+      .join("\n");
+  }
+
+  function normalizeEditorText(text) {
+    return String(text || "").replace(/\u00a0/g, " ");
+  }
+
+  function trimInlineWhitespace(text) {
+    return String(text || "").replace(/^[ \t]+|[ \t]+$/g, "");
+  }
+
+  function normalizeSerializedMarkdown(text) {
+    return String(text || "")
+      .replace(/\u00a0/g, " ")
+      .replace(/[ \t]+\n/g, "\n")
+      .replace(/\n{4,}/g, "\n\n\n");
+  }
+
+  function getNoteSelectionRange() {
+    const text = getNoteEditorText();
+    const selection = window.getSelection();
+
+    if (!selection || !selection.rangeCount) {
+      return {
+        start: text.length,
+        end: text.length,
+      };
+    }
+
+    const range = selection.getRangeAt(0);
+
+    if (
+      !elements.noteEditor.contains(range.startContainer) ||
+      !elements.noteEditor.contains(range.endContainer)
+    ) {
+      return {
+        start: text.length,
+        end: text.length,
+      };
+    }
+
+    const startRange = range.cloneRange();
+    startRange.selectNodeContents(elements.noteEditor);
+    startRange.setEnd(range.startContainer, range.startOffset);
+
+    const endRange = range.cloneRange();
+    endRange.selectNodeContents(elements.noteEditor);
+    endRange.setEnd(range.endContainer, range.endOffset);
+
+    return {
+      start: startRange.toString().length,
+      end: endRange.toString().length,
+    };
+  }
+
+  function setNoteSelectionRange(start, end) {
+    const selection = window.getSelection();
+
+    if (!selection) {
+      return;
+    }
+
+    const range = document.createRange();
+    const walker = document.createTreeWalker(
+      elements.noteEditor,
+      NodeFilter.SHOW_TEXT,
+    );
+    let currentOffset = 0;
+    let startSet = false;
+    let endSet = false;
+    let node = walker.nextNode();
+
+    while (node) {
+      const nextOffset = currentOffset + node.textContent.length;
+
+      if (!startSet && start <= nextOffset) {
+        range.setStart(node, Math.max(0, start - currentOffset));
+        startSet = true;
+      }
+
+      if (!endSet && end <= nextOffset) {
+        range.setEnd(node, Math.max(0, end - currentOffset));
+        endSet = true;
+        break;
+      }
+
+      currentOffset = nextOffset;
+      node = walker.nextNode();
+    }
+
+    if (!startSet || !endSet) {
+      range.selectNodeContents(elements.noteEditor);
+      range.collapse(false);
+    }
+
+    selection.removeAllRanges();
+    selection.addRange(range);
+  }
+
+  function insertIntoNoteEditor(text, selectionStart, selectionEnd, options = {}) {
+    prepareNoteSourceEditing();
+    const range = getNoteSelectionRange();
+    const start = Number.isInteger(selectionStart) ? selectionStart : range.start;
+    const end = Number.isInteger(selectionEnd) ? selectionEnd : range.end;
+    const current = getNoteEditorText();
+    const next = `${current.slice(0, start)}${text}${current.slice(end)}`;
+    setNoteContent(next);
+    elements.noteEditor.textContent = next;
+
+    if (options.renderAfterInsert !== false) {
+      renderNoteEditor({
+        keepFocus: true,
+        selectionRange: {
+          start: start + text.length,
+          end: start + text.length,
+        },
+      });
+      return;
+    }
+
+    elements.noteEditor.focus();
+    setNoteSelectionRange(start + text.length, start + text.length);
+  }
+
+  function wrapNoteSelection(before, after, placeholder) {
+    prepareNoteSourceEditing();
+    const range = getNoteSelectionRange();
+    const start = range.start;
+    const end = range.end;
+    const current = getNoteEditorText();
+    const selected = current.slice(start, end) || placeholder;
+    const snippet = `${before}${selected}${after}`;
+    insertIntoNoteEditor(snippet, start, end);
+    setNoteSelectionRange(start + before.length, start + before.length + selected.length);
+  }
+
+  function prefixNoteSelection(prefix, placeholder) {
+    prepareNoteSourceEditing();
+    const range = getNoteSelectionRange();
+    const start = range.start;
+    const end = range.end;
+    const current = getNoteEditorText();
+    const selected = current.slice(start, end) || placeholder;
+    const snippet = selected
+      .split("\n")
+      .map((line) => `${prefix}${line}`)
+      .join("\n");
+    insertIntoNoteEditor(snippet, start, end);
+  }
+
+  function handleMarkdownToolClick(event) {
+    const command = event.currentTarget.dataset.markdownCommand;
+
+    if (command === "h1") {
+      prefixNoteSelection("# ", "标题");
+    } else if (command === "h2") {
+      prefixNoteSelection("## ", "标题");
+    } else if (command === "h3") {
+      prefixNoteSelection("### ", "标题");
+    } else if (command === "bold") {
+      wrapNoteSelection("**", "**", "加粗文字");
+    } else if (command === "italic") {
+      wrapNoteSelection("*", "*", "斜体文字");
+    } else if (command === "code") {
+      wrapNoteSelection("`", "`", "code");
+    } else if (command === "list") {
+      prefixNoteSelection("- ", "列表项");
+    } else if (command === "link") {
+      wrapNoteSelection("[", "](https://)", "链接文本");
+    }
+  }
+
+  function openFormulaModal() {
+    elements.formulaInput.value = "";
+    elements.formulaModal.hidden = false;
+    elements.formulaInput.focus();
+  }
+
+  function closeFormulaModal() {
+    elements.formulaModal.hidden = true;
+  }
+
+  function confirmFormula() {
+    const formula = elements.formulaInput.value.trim();
+
+    if (!formula) {
+      elements.formulaInput.focus();
+      return;
+    }
+
+    const snippet = `\n$$\n${formula}\n$$\n`;
+
+    insertIntoNoteEditor(snippet, undefined, undefined, {
+      renderAfterInsert: true,
+    });
+    closeFormulaModal();
+  }
+
+  function handleGlobalKeydown(event) {
+    if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "s") {
+      event.preventDefault();
+      void saveCurrentNote();
+      return;
+    }
+
+    if (event.key === "Escape" && !elements.formulaModal.hidden) {
+      closeFormulaModal();
+    }
   }
 
   async function init() {
@@ -2203,12 +2924,26 @@
     elements.slideList.addEventListener("wheel", handleSlideWheel, {
       passive: false,
     });
-    elements.autoSaveMode.addEventListener("click", handleSaveModeClick);
-    elements.manualSaveMode.addEventListener("click", handleSaveModeClick);
-    elements.manualSaveButton.addEventListener("click", handleManualSaveClick);
     elements.newChatButton.addEventListener("click", handleNewChatClick);
     elements.chatHistoryButton.addEventListener("click", handleHistoryClick);
     elements.noteEditor.addEventListener("input", handleNoteInput);
+    elements.noteEditor.addEventListener("focus", handleNoteFocus);
+    elements.noteEditor.addEventListener("blur", handleNoteBlur);
+    elements.noteEditor.addEventListener("compositionstart", handleNoteCompositionStart);
+    elements.noteEditor.addEventListener("compositionend", handleNoteCompositionEnd);
+    elements.newNotebookButton.addEventListener("click", handleNewNotebookClick);
+    elements.notebookListButton.addEventListener("click", handleNotebookListClick);
+    elements.exportNotebookButton.addEventListener("click", handleExportNotebookClick);
+    elements.formulaButton.addEventListener("click", openFormulaModal);
+    elements.formulaConfirmButton.addEventListener("click", confirmFormula);
+    elements.formulaCancelButton.addEventListener("click", closeFormulaModal);
+    elements.formulaCancelIcon.addEventListener("click", closeFormulaModal);
+    document
+      .querySelectorAll("[data-markdown-command]")
+      .forEach((button) => {
+        button.addEventListener("click", handleMarkdownToolClick);
+      });
+    document.addEventListener("keydown", handleGlobalKeydown);
     elements.courseSelect.addEventListener("change", handleCourseChange);
     await fetchCourseIndex();
     renderCourseSelect();

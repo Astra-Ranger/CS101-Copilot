@@ -81,6 +81,8 @@ vector_store/
 
 # 本地单用户聊天记录
 backend/chat_conversations.json
+backend/user_notes.json
+backend/note_notebooks.json
 
 # ========================================
 # 6. IDE 与编辑器 (IDE & Editors)

@@ -155,6 +155,22 @@ class CourseRAGService:
 
         return title or self._fallback_title_from_query(query)
 
+    async def generate_notebook_title(self, current_title: str, content: str) -> str:
+        note_text = self._trim_text(content, 3000)
+        prompt = self.prompts["notebook_title_user"].format(
+            current_title=current_title or "未命名笔记",
+            content=note_text,
+        )
+
+        response = await self._complete_task(
+            "notebook_title",
+            messages=[
+                {"role": "system", "content": self.prompts["notebook_title_system"]},
+                {"role": "user", "content": prompt},
+            ],
+        )
+        return self._clean_generated_title(self._extract_message_content(response))
+
     async def _course_starter_messages(self, course_id: str) -> tuple[list[dict[str, Any]], str]:
         deck = await asyncio.to_thread(build_course_deck, course_id)
         course_name = str(deck.get("title") or course_id)

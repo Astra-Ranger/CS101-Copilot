@@ -11,6 +11,10 @@
     "primary": "qwen",
     "fallback": "siliconflow_qwen"
   },
+  "notebook_title": {
+    "primary": "deepseek",
+    "fallback": "siliconflow_qwen"
+  },
   "final_answer": {
     "primary": "qwen",
     "fallback": "siliconflow_qwen"

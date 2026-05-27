@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>CS101 AI 学习笔记</title>
-    <link rel="stylesheet" href="/styles.css?v=20260522-load-math" />
+    <link rel="stylesheet" href="/styles.css?v=20260524-notebooks" />
     <script>
       window.MathJax = {
         tex: {
@@ -56,38 +56,105 @@
           </section>
 
           <section class="panel notes-panel" aria-label="课程笔记">
-            <header class="panel-header">
+            <header class="panel-header notes-header">
               <div class="panel-title-row">
                 <p class="eyebrow">Notes</p>
-                <h2>课程笔记</h2>
+                <h2 id="notebook-title">课程笔记</h2>
               </div>
-              <div class="note-save-controls">
-                <div class="save-mode-toggle" aria-label="笔记保存模式">
-                  <button
-                    id="auto-save-mode"
-                    type="button"
-                    class="active"
-                    data-save-mode="auto"
-                  >
-                    自动
-                  </button>
-                  <button
-                    id="manual-save-mode"
-                    type="button"
-                    data-save-mode="manual"
-                  >
-                    手动
-                  </button>
+              <div class="notes-header-actions">
+                <div class="note-format-toolbar" role="toolbar" aria-label="Markdown 格式">
+                  <button type="button" data-markdown-command="h1" data-tooltip="一级标题">H1</button>
+                  <button type="button" data-markdown-command="h2" data-tooltip="二级标题">H2</button>
+                  <button type="button" data-markdown-command="h3" data-tooltip="三级标题">H3</button>
+                  <button type="button" data-markdown-command="bold" data-tooltip="加粗"><strong>B</strong></button>
+                  <button type="button" data-markdown-command="italic" data-tooltip="斜体"><em>I</em></button>
+                  <button type="button" data-markdown-command="code" data-tooltip="代码">&lt;/&gt;</button>
+                  <button type="button" data-markdown-command="list" data-tooltip="列表">&bull;</button>
+                  <button type="button" data-markdown-command="link" data-tooltip="链接">@</button>
+                  <button type="button" id="formula-button" data-tooltip="公式">&sum;</button>
                 </div>
-                <button id="manual-save-button" type="button" hidden>保存</button>
-                <span class="save-state" id="save-state">未保存</span>
+                <div class="note-toolbar-meta">
+                  <button
+                    id="new-notebook-button"
+                    class="chat-icon-button"
+                    type="button"
+                    aria-label="新建笔记本"
+                    data-tooltip="新建笔记本"
+                  >
+                    <svg viewBox="0 0 24 24" aria-hidden="true">
+                      <circle cx="12" cy="12" r="9"></circle>
+                      <path d="M12 8v8"></path>
+                      <path d="M8 12h8"></path>
+                    </svg>
+                  </button>
+                  <button
+                    id="notebook-list-button"
+                    class="chat-icon-button"
+                    type="button"
+                    aria-label="笔记本列表"
+                    data-tooltip="笔记本列表"
+                  >
+                    <svg viewBox="0 0 24 24" aria-hidden="true">
+                      <path d="M5 5h14v14H5z"></path>
+                      <path d="M8 9h8"></path>
+                      <path d="M8 12h8"></path>
+                      <path d="M8 15h5"></path>
+                    </svg>
+                  </button>
+                  <button
+                    id="export-notebook-button"
+                    class="chat-icon-button"
+                    type="button"
+                    aria-label="导出 Markdown"
+                    data-tooltip="导出 Markdown"
+                  >
+                    <svg viewBox="0 0 24 24" aria-hidden="true">
+                      <path d="M12 4v11"></path>
+                      <path d="m8 11 4 4 4-4"></path>
+                      <path d="M5 19h14"></path>
+                    </svg>
+                  </button>
+                  <span class="save-state" id="save-state">未保存</span>
+                </div>
               </div>
             </header>
-            <textarea
-              id="note-editor"
-              spellcheck="false"
-              placeholder="记录你的理解、问题和复习线索"
-            ></textarea>
+            <div class="notebook-menu" id="notebook-menu" hidden></div>
+            <div class="note-surface">
+              <div
+                id="note-editor"
+                class="note-editor message-markdown"
+                contenteditable="true"
+                role="textbox"
+                aria-multiline="true"
+                spellcheck="false"
+                data-placeholder="记录你的理解、问题和复习线索，也可以直接输入 Markdown"
+              ></div>
+            </div>
+            <div
+              id="formula-modal"
+              class="formula-modal"
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="formula-modal-title"
+              hidden
+            >
+              <div class="formula-dialog">
+                <div class="formula-dialog-header">
+                  <strong id="formula-modal-title">插入公式</strong>
+                  <button id="formula-cancel-icon" type="button" aria-label="关闭">×</button>
+                </div>
+                <textarea
+                  id="formula-input"
+                  rows="4"
+                  spellcheck="false"
+                  placeholder="例如：a^2+b^2=c^2"
+                ></textarea>
+                <div class="formula-actions">
+                  <button id="formula-cancel-button" type="button">取消</button>
+                  <button id="formula-confirm-button" type="button">确认渲染</button>
+                </div>
+              </div>
+            </div>
           </section>
         </div>
 
@@ -142,6 +209,6 @@
     </div>
 
     <script src="/slides-manifest.js"></script>
-    <script src="/app.js?v=20260522-load-math"></script>
+    <script src="/app.js?v=20260524-notebooks"></script>
   </body>
 </html>

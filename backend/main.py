@@ -3,10 +3,12 @@ import sys
 import json
 import asyncio
 import queue
+import re
 import threading
 from uuid import uuid4
 from pathlib import Path
 from datetime import datetime, timezone
+from urllib.parse import quote
 
 from flask import Flask, Response, jsonify, request, send_file, send_from_directory, stream_with_context
 
@@ -22,6 +24,7 @@ load_dotenv()
 REPO_ROOT = Path(__file__).resolve().parents[1]
 FRONTEND_DIR = REPO_ROOT / "frontend"
 NOTES_PATH = Path(os.getenv("COURSE_NOTES_PATH", REPO_ROOT / "backend" / "user_notes.json"))
+NOTEBOOKS_PATH = Path(REPO_ROOT / "backend" / "note_notebooks.json")
 CHAT_HISTORY_PATH = Path(
     os.getenv("COURSE_CHAT_HISTORY_PATH", REPO_ROOT / "backend" / "chat_conversations.json")
 )
@@ -53,10 +56,12 @@ from backend.conversation_store import (  # noqa: E402
     write_chat_store as write_chat_store_to_path,
     write_notes_store as write_notes_store_to_path,
 )
+from backend.notebook_service import NotebookService  # noqa: E402
 from backend.rag_service import CourseRAGService  # noqa: E402
 
 app = Flask(__name__, static_folder=str(FRONTEND_DIR), static_url_path="")
 rag_service = CourseRAGService()
+notebook_service = NotebookService(NOTEBOOKS_PATH, rag_service)
 
 
 def not_implemented(feature: str):
@@ -81,6 +86,19 @@ def error_response(status_code: int, error: str, message: str, details=None):
         body["details"] = details
 
     return jsonify(body), status_code
+
+
+def ascii_download_filename(filename: str) -> str:
+    path = Path(str(filename or "notebook.md"))
+    suffix = path.suffix or ".md"
+    stem = path.stem or "notebook"
+    ascii_stem = re.sub(r"[^A-Za-z0-9._-]+", "-", stem).strip("._-")
+    ascii_suffix = re.sub(r"[^A-Za-z0-9.]+", "", suffix) or ".md"
+
+    if not ascii_suffix.startswith("."):
+        ascii_suffix = f".{ascii_suffix}"
+
+    return f"{ascii_stem or 'notebook'}{ascii_suffix}"
 
 
 def read_notes_store():
@@ -326,6 +344,84 @@ def save_course_note(course_id: str):
             "resolvedCourseId": resolved_course_id,
             "savedAt": saved_at,
         }
+    )
+
+
+@app.get("/api/notebooks")
+def list_notebooks():
+    return jsonify({"notebooks": notebook_service.list_summaries()})
+
+
+@app.post("/api/notebooks")
+def create_notebook():
+    notebook = notebook_service.create_notebook()
+    return jsonify({"notebook": notebook})
+
+
+@app.get("/api/notebooks/<notebook_id>")
+def get_notebook(notebook_id: str):
+    notebook = notebook_service.get_notebook(notebook_id)
+
+    if not notebook:
+        return error_response(404, "NOTEBOOK_NOT_FOUND", "Notebook not found.")
+
+    return jsonify({"notebook": notebook})
+
+
+@app.put("/api/notebooks/<notebook_id>")
+def save_notebook(notebook_id: str):
+    payload = request.get_json(silent=True) or {}
+    content = payload.get("content")
+
+    if not isinstance(content, str):
+        return error_response(
+            400,
+            "INVALID_NOTEBOOK_CONTENT",
+            "Request body must include a string 'content' field.",
+        )
+
+    try:
+        result = notebook_service.save_notebook(
+            notebook_id,
+            content,
+            force_title=bool(payload.get("forceTitle")),
+        )
+    except ValueError as exc:
+        return error_response(400, "INVALID_NOTEBOOK_CONTENT", str(exc))
+
+    if not result:
+        return error_response(404, "NOTEBOOK_NOT_FOUND", "Notebook not found.")
+
+    return jsonify(result)
+
+
+@app.delete("/api/notebooks/<notebook_id>")
+def delete_notebook(notebook_id: str):
+    if not notebook_service.delete_notebook(notebook_id):
+        return error_response(404, "NOTEBOOK_NOT_FOUND", "Notebook not found.")
+
+    return jsonify({"success": True, "notebookId": notebook_id})
+
+
+@app.get("/api/notebooks/<notebook_id>/export")
+def export_notebook(notebook_id: str):
+    notebook = notebook_service.get_notebook(notebook_id)
+
+    if not notebook:
+        return error_response(404, "NOTEBOOK_NOT_FOUND", "Notebook not found.")
+
+    filename = notebook_service.export_filename(notebook)
+    fallback_filename = ascii_download_filename(filename)
+    encoded_filename = quote(filename, safe="")
+    return Response(
+        str(notebook.get("content") or ""),
+        content_type="text/markdown; charset=utf-8",
+        headers={
+            "Content-Disposition": (
+                f"attachment; filename=\"{fallback_filename}\"; "
+                f"filename*=UTF-8''{encoded_filename}"
+            ),
+        },
     )
 
 

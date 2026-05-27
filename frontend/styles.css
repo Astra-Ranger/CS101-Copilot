@@ -16,6 +16,10 @@
   box-sizing: border-box;
 }
 
+[hidden] {
+  display: none !important;
+}
+
 html,
 body {
   height: 100%;
@@ -261,48 +265,81 @@ textarea {
   font-size: 12px;
 }
 
-.note-save-controls {
-  display: flex;
-  flex: 0 0 auto;
+.notes-panel {
+  position: relative;
+}
+
+.notes-header {
   align-items: center;
+}
+
+.notes-header-actions {
+  display: flex;
+  min-width: 0;
+  flex: 0 1 auto;
+  align-items: center;
+  justify-content: flex-end;
   gap: 8px;
 }
 
-.save-mode-toggle {
-  display: inline-flex;
-  overflow: hidden;
-  border: 1px solid var(--panel-border);
+.note-format-toolbar {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 3px;
+}
+
+.note-format-toolbar button {
+  border: 1px solid transparent;
+  border-radius: 5px;
+  background: transparent;
+  color: #3f3f46;
+  cursor: pointer;
+  padding: 4px 6px;
+  font-size: 12px;
+  font-weight: 750;
+  line-height: 1.1;
+}
+
+.note-format-toolbar button {
+  position: relative;
+  min-width: 26px;
+  height: 26px;
+}
+
+.note-format-toolbar button:hover {
+  background: #f4f4f5;
+}
+
+.note-format-toolbar button:hover::after,
+.note-format-toolbar button:focus-visible::after {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 50%;
+  z-index: 50;
+  width: max-content;
+  transform: translateX(-50%);
+  border: 1px solid #d4d4d8;
   border-radius: 6px;
   background: #fff;
-}
-
-.save-mode-toggle button,
-#manual-save-button {
-  border: 0;
-  background: transparent;
-  color: var(--muted);
-  cursor: pointer;
-  padding: 5px 8px;
+  box-shadow: 0 8px 20px rgb(15 23 42 / 14%);
+  color: #27272a;
+  content: attr(data-tooltip);
+  padding: 5px 7px;
+  pointer-events: none;
+  white-space: nowrap;
   font-size: 12px;
   font-weight: 700;
-  line-height: 1;
+  line-height: 1.2;
 }
 
-.save-mode-toggle button.active {
-  background: #18181b;
-  color: #fff;
+.note-toolbar-meta {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 6px;
 }
 
-#manual-save-button {
-  border-radius: 6px;
-  background: var(--accent);
-  color: #fff;
-}
-
-#manual-save-button:disabled {
-  cursor: not-allowed;
-  background: #d4d4d8;
-}
 
 .slide-scroll {
   min-height: 0;
@@ -378,20 +415,33 @@ textarea {
   inset: 45px 12px auto auto;
   z-index: 40;
   width: min(360px, calc(100% - 24px));
-  max-height: min(520px, calc(100% - 72px));
-  overflow: hidden;
+  overflow: visible;
+}
+
+.notebook-menu {
+  position: absolute;
+  inset: 45px 12px auto auto;
+  z-index: 45;
+  width: min(360px, calc(100% - 24px));
+  overflow: visible;
 }
 
 .chat-history-dialog {
   display: flex;
-  max-height: inherit;
+  max-height: min(520px, calc(100vh - 140px));
+  min-height: 0;
   flex-direction: column;
-  overflow: auto;
+  overflow-y: auto;
+  overscroll-behavior: contain;
   border: 1px solid #e4e4e7;
   border-radius: 8px;
   background: #fff;
   box-shadow: 0 18px 42px rgb(15 23 42 / 18%);
   padding: 8px;
+}
+
+.notebook-menu .chat-history-dialog {
+  max-height: min(420px, calc(100vh - 140px));
 }
 
 .chat-history-dialog-header {
@@ -503,6 +553,16 @@ textarea {
   font-size: 13px;
 }
 
+.notebook-preview-text {
+  display: block;
+  max-width: 100%;
+  overflow: hidden;
+  color: var(--muted);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+}
+
 .chat-inline-status {
   padding: 2px 4px;
   color: var(--muted);
@@ -578,10 +638,16 @@ textarea {
   margin: 0 0 10px;
 }
 
+.message-markdown p.markdown-blank-line {
+  min-height: 1.7em;
+}
+
 .streaming-tail {
   white-space: pre-wrap;
 }
 
+.message-markdown h1,
+.message-markdown h2,
 .message-markdown h3,
 .message-markdown h4,
 .message-markdown h5,
@@ -590,6 +656,14 @@ textarea {
   color: inherit;
   font-size: 14px;
   line-height: 1.45;
+}
+
+.message-markdown h1 {
+  font-size: 18px;
+}
+
+.message-markdown h2 {
+  font-size: 16px;
 }
 
 .message-markdown ul,
@@ -787,25 +861,122 @@ textarea {
   background: #d4d4d8;
 }
 
-#note-editor {
+.note-surface {
+  position: relative;
+  display: flex;
   min-height: 0;
   flex: 1;
-  resize: none;
+  overflow: hidden;
+}
+
+#note-editor {
+  width: 100%;
+  min-height: 0;
+  flex: 1;
+  overflow: auto;
   border: 0;
   outline: none;
   padding: 16px;
+  background: #fff;
   color: var(--text);
   font-size: 14px;
   line-height: 1.7;
 }
 
-#note-editor::placeholder,
+#note-editor:empty::before {
+  color: var(--muted-light);
+  content: attr(data-placeholder);
+  pointer-events: none;
+}
+
 .chat-form textarea::placeholder {
   color: var(--muted-light);
 }
 
 .save-state.error {
   color: var(--danger);
+}
+
+.formula-modal {
+  position: absolute;
+  inset: 0;
+  z-index: 60;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgb(24 24 27 / 18%);
+  padding: 16px;
+}
+
+.formula-dialog {
+  display: flex;
+  width: min(420px, 100%);
+  flex-direction: column;
+  gap: 10px;
+  border: 1px solid #e4e4e7;
+  border-radius: 8px;
+  background: #fff;
+  box-shadow: 0 18px 42px rgb(15 23 42 / 18%);
+  padding: 12px;
+}
+
+.formula-dialog-header,
+.formula-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.formula-dialog-header button,
+.formula-actions button {
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  padding: 6px 8px;
+  font-size: 12px;
+  font-weight: 750;
+}
+
+.formula-dialog-header button {
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  padding: 0;
+  font-size: 20px;
+  line-height: 1;
+}
+
+.formula-dialog-header button:hover,
+.formula-actions button:hover {
+  background: #f4f4f5;
+  color: #27272a;
+}
+
+#formula-input {
+  width: 100%;
+  min-height: 96px;
+  resize: vertical;
+  border: 1px solid var(--panel-border);
+  border-radius: 6px;
+  outline: none;
+  padding: 8px 9px;
+  color: var(--text);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas,
+    "Liberation Mono", "Courier New", monospace;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+#formula-input:focus {
+  border-color: #60a5fa;
+}
+
+#formula-confirm-button {
+  border-radius: 6px;
+  background: #18181b;
+  color: #fff;
 }
 
 @media (max-width: 920px) {
@@ -834,8 +1005,14 @@ textarea {
     flex-direction: column;
   }
 
-  .note-save-controls {
+  .notes-header-actions,
+  .note-toolbar-meta {
     width: 100%;
+    flex-wrap: wrap;
+    justify-content: flex-start;
+  }
+
+  .note-format-toolbar {
     flex-wrap: wrap;
   }
 
