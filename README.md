@@ -117,8 +117,6 @@ FLASK_HOST=127.0.0.1 FLASK_PORT=5001 .venv/bin/python backend/main.py
 backend/user_settings.json
 ```
 
-该文件只用于本地单用户配置，不应提交到 Git。
-
 ## 数据文件
 
 以下文件是本地运行产生的用户数据：
@@ -126,28 +124,4 @@ backend/user_settings.json
 - `backend/chat_conversations.json`
 - `backend/note_notebooks.json`
 - `backend/user_settings.json`
-
-这些文件已加入 `.gitignore`，用于避免提交个人对话、笔记和 API 配置。
-
-## 检查命令
-
-后端语法检查：
-
-```bash
-PYTHONPYCACHEPREFIX=/private/tmp/codex_pycache python3 -m py_compile backend/main.py backend/model_client.py backend/rag_service.py backend/config_loader.py backend/settings_store.py
-```
-
-前端语法检查：
-
-```bash
-node --check frontend/app.js
-```
-
-配置文件检查：
-
-```bash
-python3 -m json.tool backend/config/local_models.json
-python3 -m json.tool backend/config/siliconflow_models.json
-python3 -m json.tool backend/config/model_tasks.json
-python3 -m json.tool backend/config/prompts.json
 ```
