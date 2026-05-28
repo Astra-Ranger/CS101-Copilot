@@ -215,6 +215,14 @@ textarea {
   background: transparent;
 }
 
+.chat-icon-button.is-active {
+  color: #2563eb;
+}
+
+.chat-icon-button.is-muted {
+  color: #a1a1aa;
+}
+
 #course-select {
   min-width: 0;
   width: 220px;
@@ -867,6 +875,22 @@ textarea {
   min-height: 0;
   flex: 1;
   overflow: hidden;
+}
+
+.note-autocomplete-ghost {
+  position: absolute;
+  z-index: 25;
+  max-height: 5.1em;
+  overflow: hidden;
+  border-radius: 4px;
+  background: rgb(255 255 255 / 86%);
+  color: #a1a1aa;
+  padding: 0 2px;
+  pointer-events: none;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-size: 14px;
+  line-height: 1.7;
 }
 
 #note-editor {

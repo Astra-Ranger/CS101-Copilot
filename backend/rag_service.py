@@ -96,6 +96,15 @@ class SlideImageArgs(BaseModel):
     page: int = Field(ge=1)
 
 
+class NoteAutocompleteRequest(BaseModel):
+    courseId: str = Field(default="demo-course")
+    currentPage: int = Field(default=1, ge=1)
+    noteContent: str = Field(default="")
+    cursorBefore: str = Field(default="")
+    cursorAfter: str = Field(default="")
+    lastAiAnswer: str = Field(default="")
+
+
 class CourseRAGService:
     def __init__(self) -> None:
         self.prompts = load_json_config("prompts.json")
@@ -170,6 +179,38 @@ class CourseRAGService:
             ],
         )
         return self._clean_generated_title(self._extract_message_content(response))
+
+    async def generate_note_autocomplete(self, request_data: dict[str, Any]) -> dict[str, str]:
+        try:
+            autocomplete_request = self._model_validate(NoteAutocompleteRequest, request_data)
+        except ValidationError as exc:
+            raise ValueError("笔记补全请求格式不正确。") from exc
+
+        slide_text = await asyncio.to_thread(
+            self._slide_text_from_chroma,
+            autocomplete_request.courseId,
+            autocomplete_request.currentPage,
+        )
+        prompt = self.prompts["note_autocomplete_user"].format(
+            slide_text=self._trim_text(slide_text, 2000) or "无",
+            cursor_before=self._trim_text(autocomplete_request.cursorBefore, 1000) or "无",
+            cursor_after=self._trim_text(autocomplete_request.cursorAfter, 800) or "无",
+            last_ai_answer=self._trim_text(autocomplete_request.lastAiAnswer, 1200) or "无",
+            note_text=self._trim_text(autocomplete_request.noteContent, 3000) or "无",
+        )
+
+        response = await self._complete_task(
+            "note_autocomplete",
+            messages=[
+                {"role": "system", "content": self.prompts["note_autocomplete_system"]},
+                {"role": "user", "content": prompt},
+            ],
+        )
+        suggestion = self._clean_autocomplete_suggestion(
+            self._extract_message_content(response),
+            autocomplete_request.cursorBefore,
+        )
+        return {"suggestion": suggestion}
 
     async def _course_starter_messages(self, course_id: str) -> tuple[list[dict[str, Any]], str]:
         deck = await asyncio.to_thread(build_course_deck, course_id)
@@ -402,6 +443,25 @@ class CourseRAGService:
         title = re.sub(r"^(标题|会话标题)\s*[:：]\s*", "", title).strip()
         return title[:20]
 
+    def _clean_autocomplete_suggestion(self, value: str, cursor_before: str = "") -> str:
+        text = str(value or "").strip()
+        text = re.sub(r"^```[A-Za-z0-9_-]*\s*", "", text)
+        text = re.sub(r"\s*```$", "", text).strip()
+        text = re.sub(r"^(补全|建议|续写)\s*[:：]\s*", "", text).strip()
+        text = re.sub(r"【P\d+】", "", text)
+        text = re.sub(r"【[^】\n]+-\d+】", "", text)
+        text = re.sub(r"\[引用第\d+页\]", "", text)
+        text = text.strip(" \t\r\n\"'`“”")
+
+        if text.lower() in {"", "null", "none"} or text in {"无", "空", "不需要补全", "无需补全"}:
+            return ""
+
+        before_tail = cursor_before.strip()[-120:]
+        if before_tail and text.startswith(before_tail):
+            text = text[len(before_tail) :].lstrip()
+
+        return text[:500].strip()
+
     def _fallback_title_from_query(self, query: str) -> str:
         title = re.sub(r"\s+", "", query.strip())
         title = re.sub(r"[，。！？、,.!?；;：:「」『』“”\"'`]+", "", title)
@@ -460,6 +520,61 @@ class CourseRAGService:
 
         return sorted(outline, key=lambda item: self._page_sort_key(item.get("page")))[:32]
 
+    def _slide_text_from_chroma(self, course_id: str, page: int) -> str:
+        try:
+            import chromadb
+        except ImportError as exc:
+            logger.warning("缺少 ChromaDB 依赖，无法提取当前页文字：%s", exc)
+            return ""
+
+        try:
+            deck = build_course_deck(course_id)
+        except (CourseNotFound, SlideCatalogError) as exc:
+            logger.warning("无法读取当前课程，跳过当前页文字提取：%s", exc)
+            return ""
+
+        source = self._course_source_from_deck(deck)
+        if not source:
+            return ""
+
+        try:
+            client = chromadb.PersistentClient(path=str(self.chroma_dir))
+            collection = client.get_collection(self.chroma_collection)
+            result = collection.get(
+                where={"source": source},
+                include=["documents", "metadatas"],
+                limit=1000,
+            )
+        except Exception as exc:
+            logger.warning("从 Chroma 提取当前页文字失败：%s", exc)
+            return ""
+
+        documents = result.get("documents") or []
+        metadatas = result.get("metadatas") or []
+        chunks: list[str] = []
+
+        for document, metadata in zip(documents, metadatas):
+            if not isinstance(metadata, dict):
+                continue
+
+            if self._page_start(metadata.get("page")) != page:
+                continue
+
+            content = str(document or "").strip()
+            if not content:
+                continue
+
+            section = str(metadata.get("Section") or "").strip()
+            topic = str(metadata.get("Topic") or "").strip()
+            heading = " / ".join(part for part in (section, topic) if part)
+
+            if heading:
+                chunks.append(f"{heading}\n{content}")
+            else:
+                chunks.append(content)
+
+        return self._trim_text("\n\n".join(chunks), 2000)
+
     def _course_source_from_deck(self, deck: dict[str, Any]) -> Optional[str]:
         resolved_course_id = str(deck.get("resolvedCourseId") or deck.get("courseId") or "")
         if "--" not in resolved_course_id:
@@ -496,9 +611,11 @@ class CourseRAGService:
 
     async def _route_query(self, chat_request: ChatRequest, latest_query: str) -> RouterDecision:
         short_history = self._router_history(chat_request.messages)
+        course_starter_context = self._course_starter_context(chat_request.messages)
         prompt = self.prompts["router_user"].format(
             course_id=chat_request.courseId,
             current_page=chat_request.currentPage,
+            course_starter_context=course_starter_context,
             short_history_json=json.dumps(short_history, ensure_ascii=False),
             latest_query=latest_query,
         )
@@ -731,6 +848,25 @@ class CourseRAGService:
             for message in short_messages
             if message.content.strip()
         ]
+
+    def _course_starter_context(self, messages: list[ChatMessage]) -> str:
+        for message in messages:
+            message_id = str(message.id or "")
+            if (
+                message.role == "assistant"
+                and message_id.startswith("assistant-starter-")
+                and message.content.strip()
+            ):
+                return self._trim_text(message.content, 600)
+
+        for message in messages:
+            if message.role == "user":
+                break
+
+            if message.role == "assistant" and message.content.strip():
+                return self._trim_text(message.content, 600)
+
+        return ""
 
     def _trim_history(self, messages: list[ChatMessage]) -> list[ChatMessage]:
         trimmed: list[ChatMessage] = []

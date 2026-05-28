@@ -15,6 +15,7 @@
     "primary": "deepseek",
     "fallback": "siliconflow_qwen"
   },
+  "note_autocomplete": "siliconflow_glm",
   "final_answer": {
     "primary": "qwen",
     "fallback": "siliconflow_qwen"

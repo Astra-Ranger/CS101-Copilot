@@ -395,6 +395,21 @@ def save_notebook(notebook_id: str):
     return jsonify(result)
 
 
+@app.post("/api/notebooks/autocomplete")
+def autocomplete_notebook():
+    payload = request.get_json(silent=True) or {}
+
+    try:
+        result = asyncio.run(rag_service.generate_note_autocomplete(payload))
+    except ValueError as exc:
+        return error_response(400, "INVALID_NOTE_AUTOCOMPLETE_REQUEST", str(exc))
+    except Exception:
+        app.logger.exception("Notebook autocomplete failed")
+        return error_response(502, "NOTE_AUTOCOMPLETE_FAILED", "笔记补全失败。")
+
+    return jsonify(result)
+
+
 @app.delete("/api/notebooks/<notebook_id>")
 def delete_notebook(notebook_id: str):
     if not notebook_service.delete_notebook(notebook_id):

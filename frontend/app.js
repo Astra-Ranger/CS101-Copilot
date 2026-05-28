@@ -4,6 +4,8 @@
     aliases: {},
     courses: [],
   };
+  const NOTE_AUTOCOMPLETE_KEY = "cs101-note-autocomplete-enabled";
+  const NOTE_AUTOCOMPLETE_DELAY_MS = 500;
 
   const state = {
     currentCourseId: getInitialCourseId(),
@@ -37,6 +39,13 @@
     noteRenderFrame: null,
     isComposingNote: false,
     hasUnsavedNote: false,
+    noteAutocompleteEnabled: readNoteAutocompleteEnabled(),
+    noteAutocompleteSuggestion: "",
+    noteAutocompleteTimer: null,
+    noteAutocompleteAbortController: null,
+    noteAutocompleteRequestId: 0,
+    noteAutocompleteFingerprint: "",
+    noteAutocompleteSelectionRange: null,
   };
 
   const elements = {
@@ -52,7 +61,10 @@
     chatHistoryButton: document.querySelector("#chat-history-button"),
     chatHistoryMenu: document.querySelector("#chat-history-menu"),
     notebookTitle: document.querySelector("#notebook-title"),
+    noteSurface: document.querySelector(".note-surface"),
     noteEditor: document.querySelector("#note-editor"),
+    noteAutocompleteToggle: document.querySelector("#note-autocomplete-toggle"),
+    noteAutocompleteGhost: document.querySelector("#note-autocomplete-ghost"),
     notebookMenu: document.querySelector("#notebook-menu"),
     newNotebookButton: document.querySelector("#new-notebook-button"),
     notebookListButton: document.querySelector("#notebook-list-button"),
@@ -79,6 +91,10 @@
   let mathJaxLoadPromise = null;
   const mathTypesetRoots = new Set();
   const streamingViews = new Map();
+
+  function readNoteAutocompleteEnabled() {
+    return window.localStorage.getItem(NOTE_AUTOCOMPLETE_KEY) !== "false";
+  }
 
   function getInitialCourseId() {
     const url = new URL(window.location.href);
@@ -329,6 +345,12 @@
 
   function setActiveSlidePage(pageNumber) {
     const normalizedPage = clampSlidePage(pageNumber);
+    if (normalizedPage !== state.activeSlidePage) {
+      clearNoteAutocomplete({
+        abortRequest: true,
+        resetFingerprint: true,
+      });
+    }
     state.activeSlidePage = normalizedPage;
 
     const target = document.querySelector(
@@ -2119,7 +2141,25 @@
     return response.json();
   }
 
+  async function fetchNoteAutocomplete(payload, signal) {
+    const response = await fetch("/api/notebooks/autocomplete", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(payload),
+      signal,
+    });
+
+    if (!response.ok) {
+      throw new Error("note autocomplete api unavailable");
+    }
+
+    return response.json();
+  }
+
   async function handleCourseChange(event) {
+    clearNoteAutocomplete({ abortRequest: true, resetFingerprint: true });
     state.currentCourseId = event.target.value;
     state.activeSlidePage = 1;
     state.activeConversationId = null;
@@ -2154,6 +2194,10 @@
   }
 
   async function loadCurrentCourse() {
+    clearNoteAutocomplete({
+      abortRequest: true,
+      resetFingerprint: true,
+    });
     elements.slideList.innerHTML =
       '<div class="empty-state">正在读取课件目录...</div>';
     state.currentDeck = await fetchCourseDeck(state.currentCourseId);
@@ -2344,7 +2388,7 @@
       syncNotebookSummary(result.notebook);
       renderNoteHeader();
       renderNotebookMenu();
-      updateSaveState(result.titleUpdated ? "已保存，标题已更新" : "已保存", false);
+      updateSaveState("已保存", false);
 
       if (elements.noteEditor.dataset.rawMode !== "true") {
         renderNoteEditor();
@@ -2384,9 +2428,11 @@
   }
 
   function handleNoteInput(event) {
+    clearNoteAutocomplete({ abortRequest: true });
     const selectionRange = getNoteSelectionRange();
     setNoteContent(getNoteEditorMarkdown());
     scheduleNoteMarkdownRender(selectionRange);
+    scheduleNoteAutocomplete();
   }
 
   function handleNoteFocus() {
@@ -2394,12 +2440,14 @@
   }
 
   function handleNoteBlur() {
+    clearNoteAutocomplete({ abortRequest: true });
     setNoteContent(getNoteEditorMarkdown(), { scheduleSave: false });
     renderNoteEditor();
   }
 
   function handleNoteCompositionStart() {
     state.isComposingNote = true;
+    clearNoteAutocomplete({ abortRequest: true });
   }
 
   function handleNoteCompositionEnd() {
@@ -2436,6 +2484,10 @@
   }
 
   function applyNotebook(notebook) {
+    clearNoteAutocomplete({
+      abortRequest: true,
+      resetFingerprint: true,
+    });
     state.activeNotebookId = notebook.id || null;
     state.activeNotebook = notebook;
     state.noteContent = notebook.content || "";
@@ -2719,6 +2771,371 @@
       .replace(/\n{4,}/g, "\n\n\n");
   }
 
+  function updateNoteAutocompleteToggle() {
+    if (!elements.noteAutocompleteToggle) {
+      return;
+    }
+
+    elements.noteAutocompleteToggle.classList.toggle(
+      "is-active",
+      state.noteAutocompleteEnabled,
+    );
+    elements.noteAutocompleteToggle.classList.toggle(
+      "is-muted",
+      !state.noteAutocompleteEnabled,
+    );
+    elements.noteAutocompleteToggle.setAttribute(
+      "aria-pressed",
+      String(state.noteAutocompleteEnabled),
+    );
+    elements.noteAutocompleteToggle.setAttribute(
+      "aria-label",
+      state.noteAutocompleteEnabled ? "关闭 AI 补全" : "开启 AI 补全",
+    );
+    elements.noteAutocompleteToggle.dataset.tooltip = state.noteAutocompleteEnabled
+      ? "关闭 AI 补全"
+      : "开启 AI 补全";
+  }
+
+  function handleNoteAutocompleteToggleClick() {
+    state.noteAutocompleteEnabled = !state.noteAutocompleteEnabled;
+    window.localStorage.setItem(
+      NOTE_AUTOCOMPLETE_KEY,
+      state.noteAutocompleteEnabled ? "true" : "false",
+    );
+    updateNoteAutocompleteToggle();
+    clearNoteAutocomplete({
+      abortRequest: true,
+      resetFingerprint: true,
+    });
+
+    if (state.noteAutocompleteEnabled) {
+      scheduleNoteAutocomplete();
+    }
+  }
+
+  function clearNoteAutocomplete(options = {}) {
+    if (state.noteAutocompleteTimer) {
+      window.clearTimeout(state.noteAutocompleteTimer);
+      state.noteAutocompleteTimer = null;
+    }
+
+    state.noteAutocompleteSuggestion = "";
+    state.noteAutocompleteSelectionRange = null;
+
+    if (elements.noteAutocompleteGhost) {
+      elements.noteAutocompleteGhost.hidden = true;
+      elements.noteAutocompleteGhost.textContent = "";
+    }
+
+    if (options.resetFingerprint) {
+      state.noteAutocompleteFingerprint = "";
+    }
+
+    if (options.abortRequest) {
+      state.noteAutocompleteRequestId += 1;
+      abortNoteAutocompleteRequest();
+    }
+  }
+
+  function abortNoteAutocompleteRequest() {
+    if (!state.noteAutocompleteAbortController) {
+      return;
+    }
+
+    state.noteAutocompleteAbortController.abort();
+    state.noteAutocompleteAbortController = null;
+  }
+
+  function scheduleNoteAutocomplete() {
+    if (!state.noteAutocompleteEnabled || state.isComposingNote) {
+      return;
+    }
+
+    if (document.activeElement !== elements.noteEditor) {
+      return;
+    }
+
+    if (state.noteAutocompleteTimer) {
+      window.clearTimeout(state.noteAutocompleteTimer);
+    }
+
+    state.noteAutocompleteTimer = window.setTimeout(() => {
+      state.noteAutocompleteTimer = null;
+      void requestNoteAutocomplete();
+    }, NOTE_AUTOCOMPLETE_DELAY_MS);
+  }
+
+  async function requestNoteAutocomplete() {
+    const payload = buildNoteAutocompletePayload();
+
+    if (!payload) {
+      return;
+    }
+
+    const fingerprint = JSON.stringify([
+      payload.courseId,
+      payload.currentPage,
+      payload.cursorBefore,
+      payload.cursorAfter,
+      payload.lastAiAnswer,
+    ]);
+
+    if (fingerprint === state.noteAutocompleteFingerprint) {
+      return;
+    }
+
+    state.noteAutocompleteFingerprint = fingerprint;
+    abortNoteAutocompleteRequest();
+
+    const controller = new AbortController();
+    const requestId = state.noteAutocompleteRequestId + 1;
+    state.noteAutocompleteRequestId = requestId;
+    state.noteAutocompleteAbortController = controller;
+
+    try {
+      const data = await fetchNoteAutocomplete(payload, controller.signal);
+
+      if (
+        requestId !== state.noteAutocompleteRequestId ||
+        !state.noteAutocompleteEnabled ||
+        document.activeElement !== elements.noteEditor
+      ) {
+        return;
+      }
+
+      const suggestion = String(data.suggestion || "").trim();
+      if (!suggestion) {
+        clearNoteAutocomplete();
+        return;
+      }
+
+      state.noteAutocompleteSuggestion = suggestion;
+      state.noteAutocompleteSelectionRange = payload.selectionRange;
+      showNoteAutocompleteGhost(suggestion);
+    } catch (error) {
+      if (error.name === "AbortError") {
+        return;
+      }
+
+      state.noteAutocompleteFingerprint = "";
+      console.warn("笔记自动补全失败。", error);
+      clearNoteAutocomplete();
+    } finally {
+      if (state.noteAutocompleteAbortController === controller) {
+        state.noteAutocompleteAbortController = null;
+      }
+    }
+  }
+
+  function buildNoteAutocompletePayload() {
+    if (!state.noteAutocompleteEnabled || state.isComposingNote) {
+      return null;
+    }
+
+    if (document.activeElement !== elements.noteEditor) {
+      return null;
+    }
+
+    const selection = window.getSelection();
+    if (!selection || !selection.rangeCount) {
+      return null;
+    }
+
+    const domRange = selection.getRangeAt(0);
+    if (
+      !domRange.collapsed ||
+      !elements.noteEditor.contains(domRange.startContainer) ||
+      !elements.noteEditor.contains(domRange.endContainer)
+    ) {
+      return null;
+    }
+
+    const selectionRange = getNoteSelectionRange();
+    if (selectionRange.start !== selectionRange.end) {
+      return null;
+    }
+
+    const visibleText = getNoteEditorText();
+    const cursorBefore = visibleText.slice(0, selectionRange.start);
+    const cursorAfter = visibleText.slice(selectionRange.end);
+
+    if (!`${cursorBefore}${cursorAfter}`.trim()) {
+      return null;
+    }
+
+    return {
+      courseId: state.currentCourseId,
+      currentPage: getCurrentVisibleSlidePage(),
+      noteContent: state.noteContent,
+      cursorBefore: trimAutocompleteText(cursorBefore, 1000, true),
+      cursorAfter: trimAutocompleteText(cursorAfter, 800, false),
+      lastAiAnswer: getLastAssistantAnswer(),
+      selectionRange,
+    };
+  }
+
+  function trimAutocompleteText(text, limit, fromEnd) {
+    const value = String(text || "");
+
+    if (value.length <= limit) {
+      return value;
+    }
+
+    return fromEnd ? value.slice(-limit) : value.slice(0, limit);
+  }
+
+  function getLastAssistantAnswer() {
+    for (const message of [...state.messages].reverse()) {
+      const messageId = String(message.id || "");
+      const content = String(message.content || "").trim();
+
+      if (
+        message.role === "assistant" &&
+        content &&
+        !messageId.startsWith("assistant-starter-")
+      ) {
+        return trimAutocompleteText(content, 1200, true);
+      }
+    }
+
+    return "";
+  }
+
+  function showNoteAutocompleteGhost(suggestion) {
+    if (!elements.noteAutocompleteGhost || !suggestion) {
+      return;
+    }
+
+    elements.noteAutocompleteGhost.textContent = suggestion;
+    positionNoteAutocompleteGhost();
+    elements.noteAutocompleteGhost.hidden = false;
+  }
+
+  function positionNoteAutocompleteGhost() {
+    if (!elements.noteSurface || !elements.noteAutocompleteGhost) {
+      return;
+    }
+
+    const surfaceRect = elements.noteSurface.getBoundingClientRect();
+    const caretRect = getNoteCaretRect();
+    const editorRect = elements.noteEditor.getBoundingClientRect();
+    let left = editorRect.left - surfaceRect.left + 16;
+    let top = editorRect.top - surfaceRect.top + 16;
+
+    if (caretRect) {
+      left = caretRect.right - surfaceRect.left;
+      top = caretRect.top - surfaceRect.top;
+    }
+
+    left = Math.max(8, Math.min(left, Math.max(8, surfaceRect.width - 80)));
+    top = Math.max(8, Math.min(top, Math.max(8, surfaceRect.height - 32)));
+
+    elements.noteAutocompleteGhost.style.left = `${left}px`;
+    elements.noteAutocompleteGhost.style.top = `${top}px`;
+    elements.noteAutocompleteGhost.style.maxWidth = `${Math.max(
+      120,
+      surfaceRect.width - left - 12,
+    )}px`;
+  }
+
+  function getNoteCaretRect() {
+    const selection = window.getSelection();
+
+    if (!selection || !selection.rangeCount) {
+      return null;
+    }
+
+    const range = selection.getRangeAt(0);
+
+    if (
+      !range.collapsed ||
+      !elements.noteEditor.contains(range.startContainer) ||
+      !elements.noteEditor.contains(range.endContainer)
+    ) {
+      return null;
+    }
+
+    const rects = range.getClientRects();
+    if (rects.length) {
+      return rects[rects.length - 1];
+    }
+
+    const rect = range.getBoundingClientRect();
+    return rect.width || rect.height ? rect : null;
+  }
+
+  function acceptNoteAutocomplete() {
+    const suggestion = state.noteAutocompleteSuggestion;
+    const selectionRange = state.noteAutocompleteSelectionRange;
+
+    if (!suggestion) {
+      return false;
+    }
+
+    clearNoteAutocomplete({
+      abortRequest: true,
+      resetFingerprint: true,
+    });
+    insertTextAtCurrentNoteSelection(suggestion, selectionRange);
+    return true;
+  }
+
+  function insertTextAtCurrentNoteSelection(text, selectionRange) {
+    if (selectionRange && Number.isInteger(selectionRange.start)) {
+      insertIntoNoteEditor(text, selectionRange.start, selectionRange.end);
+      return;
+    }
+
+    if (elements.noteEditor.dataset.rawMode === "true") {
+      insertIntoNoteEditor(text);
+      return;
+    }
+
+    const selection = window.getSelection();
+    if (!selection || !selection.rangeCount) {
+      insertIntoNoteEditor(text);
+      return;
+    }
+
+    const range = selection.getRangeAt(0);
+    if (
+      !elements.noteEditor.contains(range.startContainer) ||
+      !elements.noteEditor.contains(range.endContainer)
+    ) {
+      insertIntoNoteEditor(text);
+      return;
+    }
+
+    range.deleteContents();
+    const textNode = document.createTextNode(text);
+    range.insertNode(textNode);
+    range.setStartAfter(textNode);
+    range.collapse(true);
+    selection.removeAllRanges();
+    selection.addRange(range);
+
+    const nextSelectionRange = getNoteSelectionRange();
+    setNoteContent(getNoteEditorMarkdown());
+    renderNoteEditor({
+      keepFocus: true,
+      selectionRange: nextSelectionRange,
+    });
+  }
+
+  function handleNoteEditorKeydown(event) {
+    if (event.key !== "Tab" || event.isComposing) {
+      return;
+    }
+
+    if (!state.noteAutocompleteSuggestion) {
+      return;
+    }
+
+    event.preventDefault();
+    acceptNoteAutocomplete();
+  }
+
   function getNoteSelectionRange() {
     const text = getNoteEditorText();
     const selection = window.getSelection();
@@ -2914,6 +3331,7 @@
   async function init() {
     renderMessages();
     resizeChatInput();
+    updateNoteAutocompleteToggle();
     elements.chatForm.addEventListener("submit", handleChatSubmit);
     elements.chatInput.addEventListener("input", handleChatInput);
     elements.chatInput.addEventListener("keydown", handleChatKeydown);
@@ -2927,10 +3345,18 @@
     elements.newChatButton.addEventListener("click", handleNewChatClick);
     elements.chatHistoryButton.addEventListener("click", handleHistoryClick);
     elements.noteEditor.addEventListener("input", handleNoteInput);
+    elements.noteEditor.addEventListener("keydown", handleNoteEditorKeydown);
     elements.noteEditor.addEventListener("focus", handleNoteFocus);
     elements.noteEditor.addEventListener("blur", handleNoteBlur);
+    elements.noteEditor.addEventListener("scroll", () => {
+      clearNoteAutocomplete();
+    });
     elements.noteEditor.addEventListener("compositionstart", handleNoteCompositionStart);
     elements.noteEditor.addEventListener("compositionend", handleNoteCompositionEnd);
+    elements.noteAutocompleteToggle.addEventListener(
+      "click",
+      handleNoteAutocompleteToggleClick,
+    );
     elements.newNotebookButton.addEventListener("click", handleNewNotebookClick);
     elements.notebookListButton.addEventListener("click", handleNotebookListClick);
     elements.exportNotebookButton.addEventListener("click", handleExportNotebookClick);

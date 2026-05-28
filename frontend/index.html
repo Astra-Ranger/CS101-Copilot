@@ -75,6 +75,20 @@
                 </div>
                 <div class="note-toolbar-meta">
                   <button
+                    id="note-autocomplete-toggle"
+                    class="chat-icon-button"
+                    type="button"
+                    aria-label="AI 补全"
+                    aria-pressed="true"
+                    data-tooltip="关闭 AI 补全"
+                  >
+                    <svg viewBox="0 0 24 24" aria-hidden="true">
+                      <path d="M12 3l1.5 4.5L18 9l-4.5 1.5L12 15l-1.5-4.5L6 9l4.5-1.5z"></path>
+                      <path d="M19 15l.8 2.2L22 18l-2.2.8L19 21l-.8-2.2L16 18l2.2-.8z"></path>
+                      <path d="M5 14l.6 1.4L7 16l-1.4.6L5 18l-.6-1.4L3 16l1.4-.6z"></path>
+                    </svg>
+                  </button>
+                  <button
                     id="new-notebook-button"
                     class="chat-icon-button"
                     type="button"
@@ -128,6 +142,12 @@
                 aria-multiline="true"
                 spellcheck="false"
                 data-placeholder="记录你的理解、问题和复习线索，也可以直接输入 Markdown"
+              ></div>
+              <div
+                id="note-autocomplete-ghost"
+                class="note-autocomplete-ghost"
+                aria-hidden="true"
+                hidden
               ></div>
             </div>
             <div
