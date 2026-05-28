@@ -49,6 +49,7 @@ class ChatRequest(BaseModel):
     courseId: str = Field(default="demo-course")
     currentPage: int = Field(default=1, ge=1)
     currentNote: str = Field(default="")
+    answerMode: Literal["friendly", "serious"] = "friendly"
     messages: list[ChatMessage] = Field(default_factory=list)
 
 
@@ -703,7 +704,13 @@ class CourseRAGService:
         context_text = self._format_contexts(contexts)
         history = self._trim_history(chat_request.messages)
         note = self._trim_text(chat_request.currentNote, 4000)
-        system_prompt = self.prompts["final_answer_system"]
+        tone_prompt = self.prompts.get(
+            f"final_answer_tone_{chat_request.answerMode}",
+            self.prompts.get("final_answer_tone_friendly", ""),
+        )
+        system_prompt = "\n".join(
+            part for part in (self.prompts["final_answer_system"], tone_prompt) if part
+        )
         user_context = self.prompts["final_answer_context"].format(
             citation_text=citation_text,
             context_text=context_text,

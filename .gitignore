@@ -47,7 +47,7 @@ htmlcov/
 # 原始课件和提取的缓存（避免大文件撑爆 Git 仓库）
 *.pdf
 *.docx
-course_data/ 
+course_data/
 
 # 本地向量数据库目录 (SQLite 等)
 vector_store/
@@ -74,7 +74,7 @@ vector_store/
 .env.test.local
 .env.production.local
 # 允许提交模板文件，方便团队成员知道需要哪些配置
-!.env.example 
+!.env.example
 
 # 其他密钥文件
 *.pem
@@ -84,6 +84,7 @@ vector_store/
 backend/chat_conversations.json
 backend/user_notes.json
 backend/note_notebooks.json
+backend/user_settings.json
 
 # ========================================
 # 6. IDE 与编辑器 (IDE & Editors)

@@ -3,14 +3,18 @@ from __future__ import annotations
 import json
 import logging
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, AsyncIterator
 
 import httpx
 
 from backend.config_loader import load_json_config
+from backend.settings_store import read_settings
 
 
 logger = logging.getLogger(__name__)
+BACKEND_DIR = Path(__file__).resolve().parent
+USER_SETTINGS_PATH = BACKEND_DIR / "user_settings.json"
 
 
 @dataclass(frozen=True)
@@ -29,7 +33,7 @@ class ModelRegistry:
         models_config: dict[str, Any] | None = None,
         tasks_config: dict[str, Any] | None = None,
     ) -> None:
-        self.models_config = models_config or load_json_config("models.json")
+        self.models_config = models_config or self._load_models_config()
         self.tasks = tasks_config or load_json_config("model_tasks.json")
         self.providers = self.models_config.get("providers", {})
 
@@ -49,14 +53,87 @@ class ModelRegistry:
         if not isinstance(provider, dict):
             raise KeyError(f"Model provider is not configured: {name}")
 
+        provider = self._apply_provider_overrides(name, provider)
+
         return ChatModelConfig(
             name=name,
             base_url=str(provider["base_url"]).rstrip("/"),
             chat_path=str(provider["chat_path"]),
-            api_key=str(provider["api_key"]),
+            api_key=str(provider.get("api_key", "")),
             model=str(provider["model"]),
             enable_thinking=bool(provider.get("enable_thinking", False)),
         )
+
+    def _load_models_config(self) -> dict[str, Any]:
+        providers: dict[str, Any] = {}
+
+        for filename in ("local_models.json", "siliconflow_models.json"):
+            config = load_json_config(filename)
+            provider_config = config.get("providers", {})
+
+            if isinstance(provider_config, dict):
+                providers.update(provider_config)
+
+        return {"providers": providers}
+
+    def _apply_provider_overrides(self, name: str, provider: dict[str, Any]) -> dict[str, Any]:
+        next_provider = dict(provider)
+        settings = read_settings(USER_SETTINGS_PATH)
+
+        if name in {"qwen", "deepseek"}:
+            local_override = self._has_local_api_override(settings)
+
+            if local_override:
+                self._copy_setting(next_provider, settings, "base_url", "localBaseUrl")
+                self._copy_setting(next_provider, settings, "chat_path", "localChatPath")
+                self._copy_setting(next_provider, settings, "api_key", "localApiKey")
+                self._copy_setting(next_provider, settings, "model", "localModel")
+                next_provider["enable_thinking"] = bool(settings.get("localEnableThinking"))
+
+            return next_provider
+
+        if name == "siliconflow_glm":
+            autocomplete_override = self._has_autocomplete_api_override(settings)
+
+            if autocomplete_override:
+                self._copy_setting(next_provider, settings, "base_url", "autocompleteBaseUrl")
+                self._copy_setting(next_provider, settings, "chat_path", "autocompleteChatPath")
+                self._copy_setting(next_provider, settings, "api_key", "autocompleteApiKey")
+                self._copy_setting(next_provider, settings, "model", "autocompleteModel")
+                next_provider["enable_thinking"] = bool(settings.get("autocompleteEnableThinking"))
+
+            return next_provider
+
+        return next_provider
+
+    def _has_local_api_override(self, settings: dict[str, Any]) -> bool:
+        return any(
+            bool(str(settings.get(key) or "").strip())
+            for key in ("localBaseUrl", "localChatPath", "localApiKey", "localModel")
+        ) or bool(settings.get("localEnableThinking"))
+
+    def _has_autocomplete_api_override(self, settings: dict[str, Any]) -> bool:
+        return any(
+            bool(str(settings.get(key) or "").strip())
+            for key in (
+                "autocompleteBaseUrl",
+                "autocompleteChatPath",
+                "autocompleteApiKey",
+                "autocompleteModel",
+            )
+        ) or bool(settings.get("autocompleteEnableThinking"))
+
+    def _copy_setting(
+        self,
+        provider: dict[str, Any],
+        settings: dict[str, Any],
+        provider_key: str,
+        settings_key: str,
+    ) -> None:
+        value = settings.get(settings_key)
+
+        if isinstance(value, str) and value.strip():
+            provider[provider_key] = value.strip()
 
     def _task_provider_names(self, task_config: Any) -> list[str]:
         if isinstance(task_config, str):

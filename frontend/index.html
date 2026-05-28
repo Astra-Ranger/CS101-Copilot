@@ -40,6 +40,106 @@
         <div class="header-course-picker">
           <label class="eyebrow" for="course-select">选择课件</label>
           <select id="course-select" aria-label="选择课件"></select>
+          <button
+            id="app-settings-button"
+            class="chat-icon-button"
+            type="button"
+            aria-label="设置"
+            data-tooltip="设置"
+          >
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <circle cx="12" cy="5" r="1.7"></circle>
+              <circle cx="12" cy="12" r="1.7"></circle>
+              <circle cx="12" cy="19" r="1.7"></circle>
+            </svg>
+          </button>
+          <div id="app-settings-panel" class="app-settings-panel" hidden>
+            <div class="settings-panel-header">
+              <strong>设置</strong>
+              <button id="app-settings-close" type="button" aria-label="关闭设置">×</button>
+            </div>
+            <label class="settings-field">
+              <span>替代本地部署 API</span>
+              <small id="local-api-override-status">使用默认</small>
+              <input
+                id="local-base-url-input"
+                type="url"
+                autocomplete="off"
+                placeholder="Base URL"
+              />
+              <input
+                id="local-chat-path-input"
+                type="text"
+                autocomplete="off"
+                placeholder="Path，默认 /chat/completions"
+              />
+              <input
+                id="local-model-input"
+                type="text"
+                autocomplete="off"
+                placeholder="模型名"
+              />
+              <input
+                id="local-api-key-input"
+                type="password"
+                autocomplete="off"
+                placeholder="key"
+              />
+              <span class="settings-checkbox">
+                <input id="local-enable-thinking-input" type="checkbox" />
+                <span>启用 thinking</span>
+              </span>
+            </label>
+            <details id="autocomplete-api-details" class="settings-details">
+              <summary>
+                <span>自动补全 API（推荐使用 10B 以下模型）</span>
+                <small id="autocomplete-api-override-status">使用默认</small>
+              </summary>
+              <label class="settings-field">
+                <span>接口配置</span>
+                <input
+                  id="autocomplete-base-url-input"
+                  type="url"
+                  autocomplete="off"
+                  placeholder="Base URL"
+                />
+                <input
+                  id="autocomplete-chat-path-input"
+                  type="text"
+                  autocomplete="off"
+                  placeholder="Path"
+                />
+                <input
+                  id="autocomplete-model-input"
+                  type="text"
+                  autocomplete="off"
+                  placeholder="模型名"
+                />
+                <input
+                  id="autocomplete-api-key-input"
+                  type="password"
+                  autocomplete="off"
+                  placeholder="API key"
+                />
+                <span class="settings-checkbox">
+                  <input id="autocomplete-enable-thinking-input" type="checkbox" />
+                  <span>自动补全 API 启用 thinking</span>
+                </span>
+              </label>
+            </details>
+            <div class="settings-field">
+              <span>回答模式</span>
+              <div class="settings-mode-toggle" role="group" aria-label="回答模式">
+                <button type="button" data-answer-mode="friendly">友好</button>
+                <button type="button" data-answer-mode="serious">严肃</button>
+              </div>
+            </div>
+            <div class="settings-actions">
+              <span id="settings-save-state"></span>
+              <button id="settings-save-button" type="button">保存</button>
+            </div>
+            <p class="settings-acknowledgement">感谢徐志伟老师与李晓明老师为计算机科学教育做出的贡献，赋予了本项目最核心的价值。</p>
+          </div>
         </div>
       </header>
       <main class="workspace" aria-label="AI 学习笔记工作台">

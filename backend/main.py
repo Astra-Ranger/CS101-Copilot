@@ -28,6 +28,7 @@ NOTEBOOKS_PATH = Path(REPO_ROOT / "backend" / "note_notebooks.json")
 CHAT_HISTORY_PATH = Path(
     os.getenv("COURSE_CHAT_HISTORY_PATH", REPO_ROOT / "backend" / "chat_conversations.json")
 )
+USER_SETTINGS_PATH = Path(os.getenv("COURSE_USER_SETTINGS_PATH", REPO_ROOT / "backend" / "user_settings.json"))
 
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
@@ -58,6 +59,12 @@ from backend.conversation_store import (  # noqa: E402
 )
 from backend.notebook_service import NotebookService  # noqa: E402
 from backend.rag_service import CourseRAGService  # noqa: E402
+from backend.config_loader import load_json_config  # noqa: E402
+from backend.settings_store import (  # noqa: E402
+    public_settings as public_user_settings,
+    read_settings as read_user_settings_from_path,
+    update_settings as update_user_settings_at_path,
+)
 
 app = Flask(__name__, static_folder=str(FRONTEND_DIR), static_url_path="")
 rag_service = CourseRAGService()
@@ -115,6 +122,41 @@ def read_chat_store():
 
 def write_chat_store(store):
     write_chat_store_to_path(CHAT_HISTORY_PATH, store)
+
+
+def read_user_settings():
+    return read_user_settings_from_path(USER_SETTINGS_PATH)
+
+
+def public_settings_response():
+    settings = public_user_settings(read_user_settings())
+    settings["localApiKeySet"] = settings["localApiKeySet"] or provider_config_has_key(
+        "local_models.json"
+    )
+    settings["autocompleteApiKeySet"] = settings["autocompleteApiKeySet"] or provider_config_has_key(
+        "siliconflow_models.json",
+        provider_names={"siliconflow_glm"},
+    )
+    return settings
+
+
+def provider_config_has_key(filename, provider_names=None):
+    config = load_json_config(filename)
+    providers = config.get("providers", {})
+
+    if not isinstance(providers, dict):
+        return False
+
+    selected_providers = (
+        (provider for name, provider in providers.items() if name in provider_names)
+        if provider_names
+        else providers.values()
+    )
+
+    return any(
+        isinstance(provider, dict) and bool(str(provider.get("api_key") or "").strip())
+        for provider in selected_providers
+    )
 
 
 def update_conversation_title(conversation, messages):
@@ -279,6 +321,26 @@ def get_course_slide_page(course_id: str, page_number: int):
         return error_response(404, "SLIDE_NOT_FOUND", str(exc))
     except SlideCatalogError as exc:
         return error_response(500, "SLIDE_CATALOG_ERROR", str(exc))
+
+
+@app.get("/api/settings")
+def get_settings():
+    return jsonify(public_settings_response())
+
+
+@app.put("/api/settings")
+def save_settings():
+    payload = request.get_json(silent=True) or {}
+
+    if not isinstance(payload, dict):
+        return error_response(400, "INVALID_SETTINGS", "Request body must be a JSON object.")
+
+    answer_mode = payload.get("answerMode")
+    if answer_mode is not None and answer_mode not in {"friendly", "serious"}:
+        return error_response(400, "INVALID_SETTINGS", "answerMode must be friendly or serious.")
+
+    update_user_settings_at_path(USER_SETTINGS_PATH, payload)
+    return jsonify(public_settings_response())
 
 
 @app.get("/api/notes/<path:course_id>")
@@ -613,6 +675,7 @@ def delete_chat_conversation(conversation_id: str):
 @app.post("/api/chat")
 def chat():
     payload = request.get_json(silent=True) or {}
+    payload["answerMode"] = read_user_settings().get("answerMode", "friendly")
 
     def generate():
         output_queue = queue.Queue(maxsize=100)

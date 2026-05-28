@@ -1,0 +1,18 @@
+{
+  "providers": {
+    "qwen": {
+      "base_url": "http://10.10.4.99:2026/v1",
+      "chat_path": "/chat/completions",
+      "api_key": "qwenv35",
+      "model": "qwenv35",
+      "enable_thinking": false
+    },
+    "deepseek": {
+      "base_url": "http://10.10.4.99:2025/v1",
+      "chat_path": "/chat/completions",
+      "api_key": "dsflash",
+      "model": "dsflash",
+      "enable_thinking": false
+    }
+  }
+}

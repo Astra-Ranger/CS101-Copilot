@@ -46,6 +46,29 @@
     noteAutocompleteRequestId: 0,
     noteAutocompleteFingerprint: "",
     noteAutocompleteSelectionRange: null,
+    isSettingsOpen: false,
+    answerMode: "friendly",
+    localApiOverride: {
+      baseUrl: "",
+      chatPath: "",
+      model: "",
+      enableThinking: false,
+    },
+    autocompleteApiOverride: {
+      baseUrl: "",
+      chatPath: "",
+      model: "",
+      enableThinking: false,
+    },
+    settingsKeyState: {
+      localApiOverrideSet: false,
+      localApiKeySet: false,
+      autocompleteApiOverrideSet: false,
+      autocompleteApiKeySet: false,
+    },
+    settingsSaveState: "",
+    settingsSaveError: false,
+    isSavingSettings: false,
   };
 
   const elements = {
@@ -53,6 +76,23 @@
     slideCount: document.querySelector("#slide-count"),
     slideList: document.querySelector("#slide-list"),
     courseSelect: document.querySelector("#course-select"),
+    appSettingsButton: document.querySelector("#app-settings-button"),
+    appSettingsPanel: document.querySelector("#app-settings-panel"),
+    appSettingsClose: document.querySelector("#app-settings-close"),
+    settingsSaveButton: document.querySelector("#settings-save-button"),
+    settingsSaveState: document.querySelector("#settings-save-state"),
+    localBaseUrlInput: document.querySelector("#local-base-url-input"),
+    localChatPathInput: document.querySelector("#local-chat-path-input"),
+    localModelInput: document.querySelector("#local-model-input"),
+    localEnableThinkingInput: document.querySelector("#local-enable-thinking-input"),
+    localApiKeyInput: document.querySelector("#local-api-key-input"),
+    autocompleteBaseUrlInput: document.querySelector("#autocomplete-base-url-input"),
+    autocompleteChatPathInput: document.querySelector("#autocomplete-chat-path-input"),
+    autocompleteModelInput: document.querySelector("#autocomplete-model-input"),
+    autocompleteEnableThinkingInput: document.querySelector("#autocomplete-enable-thinking-input"),
+    autocompleteApiKeyInput: document.querySelector("#autocomplete-api-key-input"),
+    localApiOverrideStatus: document.querySelector("#local-api-override-status"),
+    autocompleteApiOverrideStatus: document.querySelector("#autocomplete-api-override-status"),
     messageList: document.querySelector("#message-list"),
     chatForm: document.querySelector("#chat-form"),
     chatInput: document.querySelector("#chat-input"),
@@ -186,6 +226,34 @@
         courses: staticManifest.courses || [],
       };
     }
+  }
+
+  async function fetchSettings() {
+    const response = await fetch("/api/settings", {
+      cache: "no-store",
+    });
+
+    if (!response.ok) {
+      throw new Error("settings api unavailable");
+    }
+
+    return response.json();
+  }
+
+  async function saveSettings(payload) {
+    const response = await fetch("/api/settings", {
+      method: "PUT",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(payload),
+    });
+
+    if (!response.ok) {
+      throw new Error("settings save api unavailable");
+    }
+
+    return response.json();
   }
 
   async function fetchCourseDeck(courseId) {
@@ -340,6 +408,192 @@
 
     if (selectedCourse) {
       elements.courseSelect.value = selectedCourse.id;
+    }
+  }
+
+  function applySettings(settings) {
+    state.answerMode = settings.answerMode === "serious" ? "serious" : "friendly";
+    state.localApiOverride = {
+      baseUrl: typeof settings.localBaseUrl === "string" ? settings.localBaseUrl : "",
+      chatPath: typeof settings.localChatPath === "string" ? settings.localChatPath : "",
+      model: typeof settings.localModel === "string" ? settings.localModel : "",
+      enableThinking: Boolean(settings.localEnableThinking),
+    };
+    state.autocompleteApiOverride = {
+      baseUrl: typeof settings.autocompleteBaseUrl === "string"
+        ? settings.autocompleteBaseUrl
+        : "",
+      chatPath: typeof settings.autocompleteChatPath === "string"
+        ? settings.autocompleteChatPath
+        : "",
+      model: typeof settings.autocompleteModel === "string" ? settings.autocompleteModel : "",
+      enableThinking: Boolean(settings.autocompleteEnableThinking),
+    };
+    state.settingsKeyState = {
+      localApiOverrideSet: Boolean(settings.localApiOverrideSet),
+      localApiKeySet: Boolean(settings.localApiKeySet),
+      autocompleteApiOverrideSet: Boolean(settings.autocompleteApiOverrideSet),
+      autocompleteApiKeySet: Boolean(settings.autocompleteApiKeySet),
+    };
+
+    if (elements.localBaseUrlInput) {
+      elements.localBaseUrlInput.value = state.localApiOverride.baseUrl;
+    }
+
+    if (elements.localChatPathInput) {
+      elements.localChatPathInput.value = state.localApiOverride.chatPath;
+    }
+
+    if (elements.localModelInput) {
+      elements.localModelInput.value = state.localApiOverride.model;
+    }
+
+    if (elements.localEnableThinkingInput) {
+      elements.localEnableThinkingInput.checked = state.localApiOverride.enableThinking;
+    }
+
+    if (elements.autocompleteBaseUrlInput) {
+      elements.autocompleteBaseUrlInput.value = state.autocompleteApiOverride.baseUrl;
+    }
+
+    if (elements.autocompleteChatPathInput) {
+      elements.autocompleteChatPathInput.value = state.autocompleteApiOverride.chatPath;
+    }
+
+    if (elements.autocompleteModelInput) {
+      elements.autocompleteModelInput.value = state.autocompleteApiOverride.model;
+    }
+
+    if (elements.autocompleteEnableThinkingInput) {
+      elements.autocompleteEnableThinkingInput.checked = state.autocompleteApiOverride.enableThinking;
+    }
+
+    renderSettingsPanel();
+  }
+
+  function renderSettingsPanel() {
+    if (!elements.appSettingsPanel) {
+      return;
+    }
+
+    elements.appSettingsPanel.hidden = !state.isSettingsOpen;
+
+    if (elements.localApiOverrideStatus) {
+      if (state.settingsKeyState.localApiOverrideSet && state.settingsKeyState.localApiKeySet) {
+        elements.localApiOverrideStatus.textContent = "已替代";
+      } else if (state.settingsKeyState.localApiOverrideSet) {
+        elements.localApiOverrideStatus.textContent = "缺少 key";
+      } else {
+        elements.localApiOverrideStatus.textContent = "使用默认";
+      }
+    }
+
+    if (elements.autocompleteApiOverrideStatus) {
+      if (
+        state.settingsKeyState.autocompleteApiOverrideSet
+        && state.settingsKeyState.autocompleteApiKeySet
+      ) {
+        elements.autocompleteApiOverrideStatus.textContent = "已替代";
+      } else if (state.settingsKeyState.autocompleteApiOverrideSet) {
+        elements.autocompleteApiOverrideStatus.textContent = "缺少 key";
+      } else {
+        elements.autocompleteApiOverrideStatus.textContent = "使用默认";
+      }
+    }
+
+    document.querySelectorAll("[data-answer-mode]").forEach((button) => {
+      button.classList.toggle(
+        "active",
+        button.dataset.answerMode === state.answerMode,
+      );
+    });
+
+    if (elements.settingsSaveState) {
+      elements.settingsSaveState.textContent = state.settingsSaveState;
+      elements.settingsSaveState.classList.toggle("error", state.settingsSaveError);
+    }
+
+    if (elements.settingsSaveButton) {
+      elements.settingsSaveButton.disabled = state.isSavingSettings;
+    }
+  }
+
+  async function initSettings() {
+    try {
+      applySettings(await fetchSettings());
+    } catch (error) {
+      console.warn("读取设置失败。", error);
+      renderSettingsPanel();
+    }
+  }
+
+  function openSettingsPanel() {
+    state.isSettingsOpen = true;
+    state.settingsSaveState = "";
+    state.settingsSaveError = false;
+    renderSettingsPanel();
+  }
+
+  function closeSettingsPanel() {
+    state.isSettingsOpen = false;
+    renderSettingsPanel();
+  }
+
+  function handleSettingsButtonClick() {
+    if (state.isSettingsOpen) {
+      closeSettingsPanel();
+      return;
+    }
+
+    openSettingsPanel();
+  }
+
+  function handleAnswerModeClick(event) {
+    const mode = event.currentTarget.dataset.answerMode;
+
+    if (mode !== "friendly" && mode !== "serious") {
+      return;
+    }
+
+    state.answerMode = mode;
+    state.settingsSaveState = "";
+    state.settingsSaveError = false;
+    renderSettingsPanel();
+  }
+
+  async function handleSettingsSaveClick() {
+    state.isSavingSettings = true;
+    state.settingsSaveState = "保存中";
+    state.settingsSaveError = false;
+    renderSettingsPanel();
+
+    try {
+      const nextSettings = await saveSettings({
+        answerMode: state.answerMode,
+        localBaseUrl: elements.localBaseUrlInput.value,
+        localChatPath: elements.localChatPathInput.value,
+        localModel: elements.localModelInput.value,
+        localEnableThinking: elements.localEnableThinkingInput.checked,
+        localApiKey: elements.localApiKeyInput.value,
+        autocompleteBaseUrl: elements.autocompleteBaseUrlInput.value,
+        autocompleteChatPath: elements.autocompleteChatPathInput.value,
+        autocompleteModel: elements.autocompleteModelInput.value,
+        autocompleteEnableThinking: elements.autocompleteEnableThinkingInput.checked,
+        autocompleteApiKey: elements.autocompleteApiKeyInput.value,
+      });
+
+      elements.localApiKeyInput.value = "";
+      elements.autocompleteApiKeyInput.value = "";
+      applySettings(nextSettings);
+      state.settingsSaveState = "已保存";
+      state.settingsSaveError = false;
+    } catch (error) {
+      console.error(error);
+      state.settingsSaveState = "保存失败";
+      state.settingsSaveError = true;
+    } finally {
+      state.isSavingSettings = false;
+      renderSettingsPanel();
     }
   }
 
@@ -3325,6 +3579,11 @@
 
     if (event.key === "Escape" && !elements.formulaModal.hidden) {
       closeFormulaModal();
+      return;
+    }
+
+    if (event.key === "Escape" && state.isSettingsOpen) {
+      closeSettingsPanel();
     }
   }
 
@@ -3335,6 +3594,12 @@
     elements.chatForm.addEventListener("submit", handleChatSubmit);
     elements.chatInput.addEventListener("input", handleChatInput);
     elements.chatInput.addEventListener("keydown", handleChatKeydown);
+    elements.appSettingsButton.addEventListener("click", handleSettingsButtonClick);
+    elements.appSettingsClose.addEventListener("click", closeSettingsPanel);
+    elements.settingsSaveButton.addEventListener("click", handleSettingsSaveClick);
+    document.querySelectorAll("[data-answer-mode]").forEach((button) => {
+      button.addEventListener("click", handleAnswerModeClick);
+    });
     elements.slideList.addEventListener("pointerdown", handleSlidePointerDown);
     elements.slideList.addEventListener("pointermove", handleSlidePointerMove);
     elements.slideList.addEventListener("pointerup", handleSlidePointerEnd);
@@ -3368,9 +3633,10 @@
       .querySelectorAll("[data-markdown-command]")
       .forEach((button) => {
         button.addEventListener("click", handleMarkdownToolClick);
-      });
+    });
     document.addEventListener("keydown", handleGlobalKeydown);
     elements.courseSelect.addEventListener("change", handleCourseChange);
+    await initSettings();
     await fetchCourseIndex();
     renderCourseSelect();
     await initNotes();
