@@ -2,7 +2,9 @@
   <img src="frontend/assets/cs101-copilot-logo.png" alt="CS101_Copilot" width="520" />
 </p>
 
-CS101 Copilot 是一个面向大湾区大学《计算机科学导论》课程的智能学习助手。项目将ChromaDB 向量检索、课件、多轮对话、笔记本和模型配置整合在同一个 Flask + 静态前端应用中，帮助学生围绕当前课件完成提问、复习、记录和跳转溯源。
+CS101 Copilot 是一个面向大湾区大学《计算机科学导论》课程的智能学习助手。项目将ChromaDB 向量检索、课件、多轮对话、笔记本和模型配置整合在同一个 Flask + 静态前端应用中，帮助学生围绕当前课件完成提问、复习、记录和溯源。
+
+> 建议在 cs101 git 平台下载并连接 GBU 校园网使用
 
 ## 项目定位
 
@@ -61,6 +63,14 @@ course_slide/              # 课件页图片
 ```
 
 ## 本地运行
+
+下载模型
+
+、、、bash
+git clone https://github.com/Astra-Ranger/CS101-Copilot.git
+# 建议 git clone https://git.cs101.gbu.edu.cn/Deng/cs101-copliot.git 下载校内版本
+# 部分功能 github 版本需配置 api 才能使用
+、、、
 
 先安装后端依赖：
 
