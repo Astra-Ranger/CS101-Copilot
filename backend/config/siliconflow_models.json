@@ -3,14 +3,14 @@
     "siliconflow_qwen": {
       "base_url": "https://api.siliconflow.cn/v1",
       "chat_path": "/chat/completions",
-      "api_key": "",
+      "api_key": "sk-crmimvfhpyslyybjugvvqtkzihlwqphujgzgvapkfuqyioll",
       "model": "Qwen/Qwen3.5-397B-A17B",
       "enable_thinking": false
     },
     "siliconflow_glm": {
       "base_url": "https://api.siliconflow.cn/v1",
       "chat_path": "/chat/completions",
-      "api_key": "",
+      "api_key": "sk-crmimvfhpyslyybjugvvqtkzihlwqphujgzgvapkfuqyioll",
       "model": "THUDM/GLM-4-9B-0414",
       "enable_thinking": false
     }
