@@ -41,7 +41,7 @@ body {
   min-height: 0;
   flex-direction: column;
   overflow: hidden;
-  padding: 16px;
+  padding: 6px 16px 16px;
 }
 
 .app-header {
@@ -49,13 +49,13 @@ body {
   flex: 0 0 auto;
   align-items: center;
   justify-content: space-between;
-  padding: 0 2px 14px;
+  padding: 0 0 4px;
 }
 
 .brand-row {
   display: flex;
   min-width: 0;
-  align-items: baseline;
+  align-items: center;
   gap: 12px;
 }
 
@@ -73,18 +73,12 @@ body {
   text-transform: none;
 }
 
-.app-title {
-  margin: 0;
-  color: #09090b;
-  font-size: 24px;
-  font-weight: 850;
-  line-height: 1.1;
-}
-
-.app-subtitle {
-  margin: 0;
-  color: var(--muted);
-  font-size: 13px;
+.app-logo {
+  display: block;
+  width: min(260px, 34vw);
+  height: auto;
+  object-fit: contain;
+  object-position: left center;
 }
 
 button,
