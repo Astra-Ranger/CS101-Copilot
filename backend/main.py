@@ -62,6 +62,8 @@ from backend.rag_service import (  # noqa: E402
     CourseRAGService,
     HighlightContextUnavailable,
     HighlightGenerationError,
+    MindmapContextUnavailable,
+    MindmapGenerationError,
     QuizContextUnavailable,
     QuizGenerationError,
 )
@@ -473,6 +475,37 @@ def generate_course_highlights(course_id: str):
     except Exception:
         app.logger.exception("Unexpected highlight generation failure")
         return error_response(502, "HIGHLIGHT_GENERATION_FAILED", "Highlight generation failed.")
+
+    return jsonify(result)
+
+
+@app.post("/api/courses/<path:course_id>/mindmap/generate")
+def generate_course_mindmap(course_id: str):
+    payload = request.get_json(silent=True) or {}
+
+    if not isinstance(payload, dict):
+        return error_response(
+            400,
+            "INVALID_MINDMAP_REQUEST",
+            "Request body must be a JSON object.",
+        )
+
+    try:
+        result = asyncio.run(rag_service.generate_mindmap(course_id, payload))
+    except ValueError as exc:
+        return error_response(400, "INVALID_MINDMAP_REQUEST", str(exc))
+    except CourseNotFound as exc:
+        return error_response(404, "COURSE_NOT_FOUND", str(exc))
+    except SlideCatalogError as exc:
+        return error_response(500, "SLIDE_CATALOG_ERROR", str(exc))
+    except MindmapContextUnavailable as exc:
+        return error_response(503, "MINDMAP_CONTEXT_UNAVAILABLE", str(exc))
+    except MindmapGenerationError as exc:
+        app.logger.exception("Mind map generation failed")
+        return error_response(502, "MINDMAP_GENERATION_FAILED", str(exc))
+    except Exception:
+        app.logger.exception("Unexpected mind map generation failure")
+        return error_response(502, "MINDMAP_GENERATION_FAILED", "Mind map generation failed.")
 
     return jsonify(result)
 

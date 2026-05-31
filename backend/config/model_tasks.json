@@ -24,6 +24,10 @@
     "primary": "qwen",
     "fallback": "siliconflow_qwen"
   },
+  "mindmap_generation": {
+    "primary": "qwen",
+    "fallback": "siliconflow_qwen"
+  },
   "final_answer": {
     "primary": "qwen",
     "fallback": "siliconflow_qwen"

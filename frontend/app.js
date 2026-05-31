@@ -1,5 +1,7 @@
 (function () {
   const citationPattern = /【([^】]+)】/g;
+  const noteReferencePattern =
+    /\[(?:\u5f15\u7528)?\u7b2c\s*(\d+)\s*\u9875\]|\[(?:PPT|ppt|Slide|slide|Page|page)\s*(\d+)\]/g;
   const staticManifest = window.COURSE_SLIDES_MANIFEST || {
     aliases: {},
     courses: [],
@@ -40,6 +42,16 @@
       count: 8,
       items: [],
       error: "",
+    },
+    mindmap: {
+      isOpen: false,
+      isGenerating: false,
+      depth: 3,
+      focus: "",
+      root: null,
+      collapsed: {},
+      error: "",
+      d3Status: "",
     },
     isStartingConversation: false,
     starterStatus: "",
@@ -119,6 +131,8 @@
     quizMenu: document.querySelector("#quiz-menu"),
     highlightButton: document.querySelector("#highlight-button"),
     highlightMenu: document.querySelector("#highlight-menu"),
+    mindmapButton: document.querySelector("#mindmap-button"),
+    mindmapMenu: document.querySelector("#mindmap-menu"),
     notebookTitle: document.querySelector("#notebook-title"),
     noteSurface: document.querySelector(".note-surface"),
     noteEditor: document.querySelector("#note-editor"),
@@ -135,6 +149,7 @@
     formulaCancelButton: document.querySelector("#formula-cancel-button"),
     formulaCancelIcon: document.querySelector("#formula-cancel-icon"),
     saveState: document.querySelector("#save-state"),
+    noteReferenceList: document.querySelector("#note-reference-list"),
   };
 
   const slidePointers = new Map();
@@ -145,9 +160,11 @@
   const LAST_NOTEBOOK_KEY = "cs101-last-notebook-id";
   const MATHJAX_CDN_URL = "https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js";
   const MATHJAX_LOCAL_URL = "/vendor/mathjax/tex-mml-chtml.js";
+  const D3_CDN_URL = "https://cdn.jsdelivr.net/npm/d3@7/dist/d3.min.js";
   let mathTypesetInFlight = false;
   let mathTypesetScheduled = false;
   let mathJaxLoadPromise = null;
+  let d3LoadPromise = null;
   const mathTypesetRoots = new Set();
   const streamingViews = new Map();
 
@@ -328,6 +345,27 @@
 
     if (!response.ok) {
       const message = data.message || data.error || "highlight generation api unavailable";
+      throw new Error(message);
+    }
+
+    return data;
+  }
+
+  async function generateCourseMindmap(courseId, payload) {
+    const response = await fetch(
+      `/api/courses/${encodeURIComponent(courseId)}/mindmap/generate`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(payload),
+      },
+    );
+    const data = await response.json().catch(() => ({}));
+
+    if (!response.ok) {
+      const message = data.message || data.error || "mind map generation api unavailable";
       throw new Error(message);
     }
 
@@ -1861,6 +1899,321 @@
     return "中";
   }
 
+  function renderMindmapMenu() {
+    elements.mindmapMenu.innerHTML = "";
+    elements.mindmapMenu.hidden = !state.mindmap.isOpen;
+    elements.mindmapButton.classList.toggle("is-active", state.mindmap.isOpen);
+
+    if (!state.mindmap.isOpen) {
+      return;
+    }
+
+    const dialog = document.createElement("div");
+    dialog.className = "chat-history-dialog mindmap-dialog";
+
+    const header = document.createElement("div");
+    header.className = "chat-history-dialog-header";
+
+    const titleWrap = document.createElement("div");
+    titleWrap.className = "quiz-title-wrap";
+
+    const title = document.createElement("div");
+    title.className = "chat-history-dialog-title";
+    title.textContent = "思维导图";
+
+    const subtitle = document.createElement("span");
+    subtitle.className = "quiz-subtitle";
+    subtitle.textContent = state.currentDeck ? state.currentDeck.title : "当前课程";
+
+    titleWrap.append(title, subtitle);
+
+    const closeButton = document.createElement("button");
+    closeButton.type = "button";
+    closeButton.className = "chat-history-close";
+    closeButton.setAttribute("aria-label", "关闭思维导图");
+    closeButton.textContent = "×";
+    closeButton.addEventListener("click", () => {
+      state.mindmap.isOpen = false;
+      renderMindmapMenu();
+    });
+
+    header.append(titleWrap, closeButton);
+    dialog.append(header);
+
+    const controls = document.createElement("div");
+    controls.className = "mindmap-controls";
+
+    const depthLabel = document.createElement("label");
+    depthLabel.className = "quiz-count-field";
+    depthLabel.textContent = "层级";
+
+    const depthSelect = document.createElement("select");
+    [2, 3, 4].forEach((depth) => {
+      const option = document.createElement("option");
+      option.value = String(depth);
+      option.textContent = `${depth} 层`;
+      option.selected = state.mindmap.depth === depth;
+      depthSelect.append(option);
+    });
+    depthSelect.addEventListener("change", () => {
+      state.mindmap.depth = Number(depthSelect.value) || 3;
+    });
+    depthLabel.append(depthSelect);
+
+    const focusInput = document.createElement("input");
+    focusInput.type = "text";
+    focusInput.value = state.mindmap.focus;
+    focusInput.placeholder = "聚焦主题，可留空";
+    focusInput.className = "mindmap-focus-input";
+    focusInput.addEventListener("input", () => {
+      state.mindmap.focus = focusInput.value;
+    });
+
+    const generateButton = document.createElement("button");
+    generateButton.type = "button";
+    generateButton.className = "quiz-generate-button";
+    generateButton.disabled = state.mindmap.isGenerating;
+    generateButton.textContent = state.mindmap.isGenerating ? "生成中..." : "生成导图";
+    generateButton.addEventListener("click", () => {
+      void handleGenerateMindmapClick();
+    });
+
+    controls.append(depthLabel, focusInput, generateButton);
+    dialog.append(controls);
+
+    if (state.mindmap.error) {
+      const error = document.createElement("div");
+      error.className = "quiz-error";
+      error.textContent = state.mindmap.error;
+      dialog.append(error);
+    }
+
+    if (state.mindmap.isGenerating) {
+      const loading = document.createElement("div");
+      loading.className = "chat-inline-status";
+      loading.textContent = "正在读取课程资料并生成思维导图...";
+      dialog.append(loading);
+    }
+
+    if (!state.mindmap.root && !state.mindmap.isGenerating) {
+      const empty = document.createElement("div");
+      empty.className = "chat-history-empty";
+      empty.textContent = "生成后可点击知识点向 AI 提问，点击小箭头展开子知识点。";
+      dialog.append(empty);
+    }
+
+    if (state.mindmap.root) {
+      const canvas = document.createElement("div");
+      canvas.className = "mindmap-canvas";
+      canvas.textContent = state.mindmap.d3Status || "正在准备 D3 画布...";
+      dialog.append(canvas);
+      void renderMindmapCanvas(canvas);
+    }
+
+    elements.mindmapMenu.append(dialog);
+  }
+
+  async function loadD3() {
+    if (window.d3) {
+      return window.d3;
+    }
+
+    if (d3LoadPromise) {
+      return d3LoadPromise;
+    }
+
+    d3LoadPromise = new Promise((resolve, reject) => {
+      const script = document.createElement("script");
+      script.src = D3_CDN_URL;
+      script.async = true;
+      script.onload = () => {
+        if (window.d3) {
+          resolve(window.d3);
+          return;
+        }
+        reject(new Error("D3.js did not initialize."));
+      };
+      script.onerror = () => reject(new Error("D3.js 加载失败。"));
+      document.head.append(script);
+    });
+
+    return d3LoadPromise;
+  }
+
+  async function renderMindmapCanvas(container) {
+    if (!state.mindmap.root) {
+      return;
+    }
+
+    let d3;
+    try {
+      d3 = await loadD3();
+    } catch (error) {
+      container.textContent = error.message || "D3.js 加载失败。";
+      return;
+    }
+
+    if (!state.mindmap.isOpen || !container.isConnected) {
+      return;
+    }
+
+    container.innerHTML = "";
+    const visibleRoot = buildVisibleMindmapNode(state.mindmap.root);
+    const root = d3.hierarchy(visibleRoot);
+    d3.tree().nodeSize([78, 190])(root);
+
+    const nodes = root.descendants();
+    const links = root.links();
+    const minX = Math.min(...nodes.map((node) => node.x));
+    const maxX = Math.max(...nodes.map((node) => node.x));
+    const minY = Math.min(...nodes.map((node) => node.y));
+    const maxY = Math.max(...nodes.map((node) => node.y));
+    const viewWidth = Math.max(560, maxY - minY + 320);
+    const viewHeight = Math.max(280, maxX - minX + 140);
+    const offsetX = minY - 110;
+    const offsetY = minX - 70;
+
+    const svg = d3
+      .select(container)
+      .append("svg")
+      .attr("class", "mindmap-svg")
+      .attr("viewBox", `${offsetX} ${offsetY} ${viewWidth} ${viewHeight}`)
+      .attr("role", "img")
+      .attr("aria-label", "课程思维导图");
+
+    svg
+      .append("g")
+      .attr("class", "mindmap-links")
+      .selectAll("path")
+      .data(links)
+      .join("path")
+      .attr(
+        "d",
+        (link) =>
+          `M${link.source.y + 58},${link.source.x}C${link.source.y + 115},${link.source.x} ${link.target.y - 95},${link.target.x} ${link.target.y - 36},${link.target.x}`,
+      );
+
+    const node = svg
+      .append("g")
+      .attr("class", "mindmap-nodes")
+      .selectAll("g")
+      .data(nodes)
+      .join("g")
+      .attr("class", "mindmap-node")
+      .attr("transform", (item) => `translate(${item.y},${item.x})`);
+
+    const toggle = node
+      .filter((item) => item.data._hasChildren)
+      .append("g")
+      .attr("class", "mindmap-toggle")
+      .attr("transform", "translate(-32,0)")
+      .attr("tabindex", 0)
+      .attr("role", "button")
+      .attr("aria-label", "展开或折叠知识点")
+      .on("click", (event, item) => {
+        event.stopPropagation();
+        toggleMindmapNode(item.data);
+      })
+      .on("keydown", (event, item) => {
+        if (event.key !== "Enter" && event.key !== " ") {
+          return;
+        }
+        event.preventDefault();
+        toggleMindmapNode(item.data);
+      });
+
+    toggle.append("circle").attr("r", 11);
+    toggle
+      .append("text")
+      .attr("dy", "0.35em")
+      .text((item) => (state.mindmap.collapsed[item.data.id] ? "›" : "⌄"));
+
+    const titleGroup = node
+      .append("g")
+      .attr("class", "mindmap-title-hit")
+      .attr("tabindex", 0)
+      .attr("role", "button")
+      .attr("aria-label", "向 AI 提问这个知识点")
+      .on("click", (_event, item) => {
+        askMindmapNode(item.data);
+      })
+      .on("keydown", (event, item) => {
+        if (event.key !== "Enter" && event.key !== " ") {
+          return;
+        }
+        event.preventDefault();
+        askMindmapNode(item.data);
+      });
+
+    titleGroup
+      .append("rect")
+      .attr("x", -4)
+      .attr("y", -18)
+      .attr("width", (item) => mindmapNodeWidth(item.data.title))
+      .attr("height", 36)
+      .attr("rx", 8);
+
+    titleGroup
+      .append("text")
+      .attr("x", 10)
+      .attr("dy", "0.35em")
+      .text((item) => truncateMindmapTitle(item.data.title));
+  }
+
+  function buildVisibleMindmapNode(node) {
+    const children = Array.isArray(node.children) ? node.children : [];
+    const collapsed = Boolean(state.mindmap.collapsed[node.id]);
+
+    return {
+      ...node,
+      _hasChildren: children.length > 0,
+      children: collapsed ? [] : children.map(buildVisibleMindmapNode),
+    };
+  }
+
+  function mindmapNodeWidth(title) {
+    return Math.min(178, Math.max(76, String(title || "").length * 13 + 24));
+  }
+
+  function truncateMindmapTitle(title) {
+    const value = String(title || "");
+    return value.length > 12 ? `${value.slice(0, 11)}…` : value;
+  }
+
+  function toggleMindmapNode(node) {
+    if (!node || !node.id) {
+      return;
+    }
+
+    state.mindmap.collapsed[node.id] = !state.mindmap.collapsed[node.id];
+    renderMindmapMenu();
+  }
+
+  function askMindmapNode(node) {
+    if (!node || !node.title) {
+      return;
+    }
+
+    const citations = Array.isArray(node.citations)
+      ? node.citations.map((citation) => citation.label || `P${citation.pageNumber}`).join("、")
+      : "";
+    const prompt = [
+      `请围绕思维导图中的“${node.title}”讲解。`,
+      node.summary ? `我看到的摘要：${node.summary}` : "",
+      citations ? `相关课件位置：${citations}` : "",
+      "请结合当前课程资料，说明它的含义、和上下级知识点的关系，以及我应该如何复习。",
+    ]
+      .filter(Boolean)
+      .join("\n");
+
+    state.mindmap.isOpen = false;
+    renderMindmapMenu();
+    elements.chatInput.value = prompt;
+    resizeChatInput();
+    elements.chatInput.focus();
+    elements.chatForm.requestSubmit();
+  }
+
   function notebookSummaryFromNotebook(notebook) {
     const content = String(notebook.content || "");
     return {
@@ -2843,6 +3196,9 @@
     state.quiz.error = "";
     state.highlights.items = [];
     state.highlights.error = "";
+    state.mindmap.root = null;
+    state.mindmap.collapsed = {};
+    state.mindmap.error = "";
     window.history.replaceState(
       {},
       "",
@@ -2850,6 +3206,8 @@
     );
     await loadCurrentCourse();
     renderQuizMenu();
+    renderHighlightMenu();
+    renderMindmapMenu();
     await loadLatestConversationForCurrentCourse();
   }
 
@@ -3159,8 +3517,10 @@
     if (state.isHistoryOpen) {
       state.quiz.isOpen = false;
       state.highlights.isOpen = false;
+      state.mindmap.isOpen = false;
       renderQuizMenu();
       renderHighlightMenu();
+      renderMindmapMenu();
     }
     renderHistoryMenu();
   }
@@ -3170,8 +3530,10 @@
     if (state.quiz.isOpen) {
       state.isHistoryOpen = false;
       state.highlights.isOpen = false;
+      state.mindmap.isOpen = false;
       renderHistoryMenu();
       renderHighlightMenu();
+      renderMindmapMenu();
     }
     renderQuizMenu();
   }
@@ -3181,10 +3543,25 @@
     if (state.highlights.isOpen) {
       state.isHistoryOpen = false;
       state.quiz.isOpen = false;
+      state.mindmap.isOpen = false;
       renderHistoryMenu();
       renderQuizMenu();
+      renderMindmapMenu();
     }
     renderHighlightMenu();
+  }
+
+  function handleMindmapClick() {
+    state.mindmap.isOpen = !state.mindmap.isOpen;
+    if (state.mindmap.isOpen) {
+      state.isHistoryOpen = false;
+      state.quiz.isOpen = false;
+      state.highlights.isOpen = false;
+      renderHistoryMenu();
+      renderQuizMenu();
+      renderHighlightMenu();
+    }
+    renderMindmapMenu();
   }
 
   async function handleGenerateQuizClick() {
@@ -3242,6 +3619,37 @@
     } finally {
       state.highlights.isGenerating = false;
       renderHighlightMenu();
+    }
+  }
+
+  async function handleGenerateMindmapClick() {
+    if (state.mindmap.isGenerating) {
+      return;
+    }
+
+    state.mindmap.isGenerating = true;
+    state.mindmap.error = "";
+    state.mindmap.d3Status = "";
+    renderMindmapMenu();
+
+    try {
+      const data = await generateCourseMindmap(state.currentCourseId, {
+        depth: state.mindmap.depth,
+        focus: state.mindmap.focus,
+        currentNote: state.noteContent,
+      });
+      state.mindmap.root = data.mindmap || null;
+      state.mindmap.collapsed = {};
+      if (!state.mindmap.root) {
+        state.mindmap.error = "没有生成可用思维导图，请稍后再试。";
+      }
+    } catch (error) {
+      console.error(error);
+      state.mindmap.root = null;
+      state.mindmap.error = error.message || "思维导图生成失败，请稍后重试。";
+    } finally {
+      state.mindmap.isGenerating = false;
+      renderMindmapMenu();
     }
   }
 
@@ -4123,7 +4531,9 @@
     elements.chatHistoryButton.addEventListener("click", handleHistoryClick);
     elements.quizButton.addEventListener("click", handleQuizClick);
     elements.highlightButton.addEventListener("click", handleHighlightClick);
+    elements.mindmapButton.addEventListener("click", handleMindmapClick);
     elements.noteEditor.addEventListener("input", handleNoteInput);
+    elements.noteEditor.addEventListener("input", renderNoteReferences);
     elements.noteEditor.addEventListener("keydown", handleNoteEditorKeydown);
     elements.noteEditor.addEventListener("focus", handleNoteFocus);
     elements.noteEditor.addEventListener("blur", handleNoteBlur);
@@ -4154,10 +4564,48 @@
     await fetchCourseIndex();
     renderCourseSelect();
     await initNotes();
+    renderNoteReferences();
+    renderNoteReferences();
     await loadCurrentCourse();
     renderQuizMenu();
     renderHighlightMenu();
+    renderMindmapMenu();
     await loadLatestConversationForCurrentCourse();
+  }
+
+  function getNoteReferences(text) {
+    const references = [];
+    const seenPages = new Set();
+
+    for (const match of text.matchAll(noteReferencePattern)) {
+      const pageNumber = Number(match[1] || match[2]);
+
+      if (!Number.isFinite(pageNumber) || pageNumber < 1 || seenPages.has(pageNumber)) {
+        continue;
+      }
+
+      seenPages.add(pageNumber);
+      references.push(pageNumber);
+    }
+
+    return references;
+  }
+
+  function renderNoteReferences() {
+    if (!elements.noteReferenceList) {
+      return;
+    }
+
+    elements.noteReferenceList.innerHTML = "";
+
+    getNoteReferences(state.noteContent).forEach((pageNumber) => {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "note-reference-button";
+      button.textContent = `第 ${pageNumber} 页`;
+      button.addEventListener("click", () => setActiveSlidePage(pageNumber));
+      elements.noteReferenceList.append(button);
+    });
   }
 
   init();

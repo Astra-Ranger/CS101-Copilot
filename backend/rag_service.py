@@ -135,6 +135,12 @@ class HighlightGenerateRequest(BaseModel):
     currentNote: str = Field(default="")
 
 
+class MindmapGenerateRequest(BaseModel):
+    depth: int = Field(default=3, ge=2, le=4)
+    focus: str = Field(default="")
+    currentNote: str = Field(default="")
+
+
 class RawGeneratedHighlight(BaseModel):
     title: str
     summary: str
@@ -155,6 +161,14 @@ class HighlightContextUnavailable(Exception):
 
 
 class HighlightGenerationError(Exception):
+    pass
+
+
+class MindmapContextUnavailable(Exception):
+    pass
+
+
+class MindmapGenerationError(Exception):
     pass
 
 
@@ -333,6 +347,41 @@ class CourseRAGService:
             "resolvedCourseId": str(deck.get("resolvedCourseId") or deck.get("courseId") or course_id),
             "generatedAt": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
             "highlights": highlights,
+        }
+
+    async def generate_mindmap(self, course_id: str, request_data: dict[str, Any]) -> dict[str, Any]:
+        try:
+            mindmap_request = self._model_validate(MindmapGenerateRequest, request_data)
+        except ValidationError as exc:
+            raise ValueError("Mind map generation request is invalid.") from exc
+
+        deck = await asyncio.to_thread(build_course_deck, course_id)
+        contexts = await asyncio.to_thread(self._quiz_contexts_from_chroma, deck)
+        if not contexts:
+            raise MindmapContextUnavailable("当前课程没有可用文本资料，无法生成思维导图。")
+
+        messages = self._build_mindmap_generation_messages(deck, mindmap_request, contexts)
+
+        try:
+            response = await self._complete_task("mindmap_generation", messages)
+            content = self._extract_message_content(response)
+            data = json.loads(self._extract_json_object(content))
+            mindmap = self._normalize_generated_mindmap(
+                data,
+                mindmap_request,
+                contexts,
+                str(deck.get("courseId") or course_id),
+            )
+        except MindmapGenerationError:
+            raise
+        except Exception as exc:
+            raise MindmapGenerationError("Mind map generation failed.") from exc
+
+        return {
+            "courseId": course_id,
+            "resolvedCourseId": str(deck.get("resolvedCourseId") or deck.get("courseId") or course_id),
+            "generatedAt": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+            "mindmap": mindmap,
         }
 
     async def _course_starter_messages(self, course_id: str) -> tuple[list[dict[str, Any]], str]:
@@ -876,6 +925,36 @@ class CourseRAGService:
             {"role": "user", "content": prompt},
         ]
 
+    def _build_mindmap_generation_messages(
+        self,
+        deck: dict[str, Any],
+        mindmap_request: MindmapGenerateRequest,
+        contexts: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        course_name = str(deck.get("title") or deck.get("courseId") or "CS101")
+        context_text = "\n\n".join(
+            (
+                f"[{item['sourceId']}] page={item['pageNumber']} label={item['label']}"
+                f"{' heading=' + item['heading'] if item.get('heading') else ''}\n"
+                f"{item['content']}"
+            )
+            for item in contexts
+        )
+        note_text = self._trim_text(mindmap_request.currentNote, 2500) or "无"
+        focus_text = self._trim_text(mindmap_request.focus, 120) or "整节课"
+        prompt = self.prompts["mindmap_generation_user"].format(
+            course_name=course_name,
+            depth=mindmap_request.depth,
+            focus=focus_text,
+            context_text=context_text,
+            note_text=note_text,
+        )
+
+        return [
+            {"role": "system", "content": self.prompts["mindmap_generation_system"]},
+            {"role": "user", "content": prompt},
+        ]
+
     def _normalize_generated_questions(
         self,
         data: dict[str, Any],
@@ -1013,6 +1092,87 @@ class CourseRAGService:
             raise HighlightGenerationError("Generated fewer valid highlights than requested.")
 
         return normalized
+
+    def _normalize_generated_mindmap(
+        self,
+        data: dict[str, Any],
+        mindmap_request: MindmapGenerateRequest,
+        contexts: list[dict[str, Any]],
+        course_id: str,
+    ) -> dict[str, Any]:
+        raw_root = data.get("mindmap") if isinstance(data, dict) else None
+        if not isinstance(raw_root, dict):
+            raise MindmapGenerationError("Generated response does not contain a mindmap.")
+
+        source_map = {item["sourceId"]: item for item in contexts}
+
+        def citations_from_source_ids(source_ids: Any) -> list[dict[str, Any]]:
+            if not isinstance(source_ids, list):
+                return []
+
+            citations = []
+            seen_pages: set[int] = set()
+            for source_id in source_ids:
+                source = source_map.get(str(source_id))
+                if not source:
+                    continue
+                page = int(source["pageNumber"])
+                if page in seen_pages:
+                    continue
+                seen_pages.add(page)
+                citations.append(
+                    {
+                        "pageNumber": page,
+                        "label": source["label"],
+                        "imageUrl": self._slide_image_url(course_id, page),
+                    }
+                )
+                if len(citations) >= 2:
+                    break
+
+            return citations
+
+        def normalize_node(raw_node: Any, depth: int, path: str) -> Optional[dict[str, Any]]:
+            if not isinstance(raw_node, dict):
+                return None
+
+            title = " ".join(str(raw_node.get("title") or "").strip().split())
+            if not title:
+                return None
+
+            summary = " ".join(str(raw_node.get("summary") or "").strip().split())
+            children = []
+            if depth < mindmap_request.depth:
+                raw_children = raw_node.get("children")
+                if isinstance(raw_children, list):
+                    for index, raw_child in enumerate(raw_children[:8], start=1):
+                        child = normalize_node(raw_child, depth + 1, f"{path}_{index}")
+                        if child:
+                            children.append(child)
+
+            return {
+                "id": f"m_{path}",
+                "title": title[:90],
+                "summary": summary[:500],
+                "citations": citations_from_source_ids(raw_node.get("sourceIds")),
+                "children": children,
+            }
+
+        mindmap = normalize_node(raw_root, 1, "1")
+        if not mindmap:
+            raise MindmapGenerationError("Generated mind map root is invalid.")
+
+        if self._count_mindmap_nodes(mindmap) < 2:
+            raise MindmapGenerationError("Generated mind map has too few nodes.")
+
+        return mindmap
+
+    def _count_mindmap_nodes(self, node: dict[str, Any]) -> int:
+        return 1 + sum(
+            self._count_mindmap_nodes(child)
+            for child in node.get("children", [])
+            if isinstance(child, dict)
+        )
 
     def _course_source_from_deck(self, deck: dict[str, Any]) -> Optional[str]:
         resolved_course_id = str(deck.get("resolvedCourseId") or deck.get("courseId") or "")

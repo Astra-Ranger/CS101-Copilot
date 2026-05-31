@@ -623,6 +623,39 @@ textarea {
   overflow: visible;
 }
 
+.note-reference-list {
+  display: flex;
+  min-height: 34px;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 6px;
+  overflow-x: auto;
+  border-bottom: 1px solid #f1f5f9;
+  padding: 6px 14px;
+}
+
+.note-reference-list:empty {
+  display: none;
+}
+
+.note-reference-button {
+  flex: 0 0 auto;
+  border: 1px solid #bfdbfe;
+  border-radius: 6px;
+  background: var(--accent-soft);
+  color: #1d4ed8;
+  cursor: pointer;
+  padding: 4px 8px;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1.2;
+}
+
+.note-reference-button:hover {
+  border-color: #93c5fd;
+  background: #dbeafe;
+}
+
 .quiz-menu {
   position: absolute;
   inset: 45px 12px auto auto;
@@ -636,6 +669,14 @@ textarea {
   inset: 45px 12px auto auto;
   z-index: 43;
   width: min(430px, calc(100% - 24px));
+  overflow: visible;
+}
+
+.mindmap-menu {
+  position: absolute;
+  inset: 45px 12px auto auto;
+  z-index: 44;
+  width: min(640px, calc(100% - 24px));
   overflow: visible;
 }
 
@@ -673,6 +714,11 @@ textarea {
 .highlight-dialog {
   gap: 8px;
   max-height: min(620px, calc(100vh - 140px));
+}
+
+.mindmap-dialog {
+  gap: 8px;
+  max-height: min(700px, calc(100vh - 140px));
 }
 
 .chat-history-dialog-header {
@@ -909,6 +955,101 @@ textarea {
   color: var(--muted);
   font-size: 12px;
   line-height: 1.55;
+}
+
+.mindmap-controls {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  padding: 2px 4px 6px;
+}
+
+.mindmap-focus-input {
+  min-width: 0;
+  height: 30px;
+  border: 1px solid #e4e4e7;
+  border-radius: 6px;
+  outline: none;
+  padding: 0 9px;
+  color: var(--text);
+  font-size: 12px;
+}
+
+.mindmap-focus-input:focus {
+  border-color: #60a5fa;
+}
+
+.mindmap-canvas {
+  min-height: 320px;
+  overflow: auto;
+  border: 1px solid #eceff3;
+  border-radius: 8px;
+  background: linear-gradient(#fff, #fff), #f8fafc;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.mindmap-svg {
+  display: block;
+  width: 100%;
+  min-width: 580px;
+  height: 360px;
+}
+
+.mindmap-links path {
+  fill: none;
+  stroke: #cbd5e1;
+  stroke-width: 1.8;
+}
+
+.mindmap-title-hit {
+  cursor: pointer;
+  outline: none;
+}
+
+.mindmap-title-hit rect {
+  fill: #fff;
+  stroke: #bfdbfe;
+  stroke-width: 1.2;
+}
+
+.mindmap-title-hit:hover rect,
+.mindmap-title-hit:focus-visible rect {
+  fill: #eff6ff;
+  stroke: #60a5fa;
+}
+
+.mindmap-title-hit text {
+  fill: #18181b;
+  font-size: 12px;
+  font-weight: 800;
+  pointer-events: none;
+}
+
+.mindmap-toggle {
+  cursor: pointer;
+  outline: none;
+}
+
+.mindmap-toggle circle {
+  fill: #f8fafc;
+  stroke: #cbd5e1;
+  stroke-width: 1.2;
+}
+
+.mindmap-toggle:hover circle,
+.mindmap-toggle:focus-visible circle {
+  fill: #dbeafe;
+  stroke: #60a5fa;
+}
+
+.mindmap-toggle text {
+  fill: #2563eb;
+  font-size: 18px;
+  font-weight: 900;
+  text-anchor: middle;
+  pointer-events: none;
 }
 
 .chat-history-close,

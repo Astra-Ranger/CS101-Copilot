@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>CS101_Copilot</title>
-    <link rel="stylesheet" href="/styles.css?v=20260531-highlights" />
+    <link rel="stylesheet" href="/styles.css?v=20260531-mindmap" />
     <script>
       window.MathJax = {
         tex: {
@@ -341,13 +341,31 @@
                   <path d="M13.5 8.5l2 2"></path>
                 </svg>
               </button>
+              <button
+                id="mindmap-button"
+                class="chat-icon-button"
+                type="button"
+                aria-label="思维导图"
+                data-tooltip="思维导图"
+              >
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <circle cx="12" cy="5" r="2"></circle>
+                  <circle cx="6" cy="17" r="2"></circle>
+                  <circle cx="18" cy="17" r="2"></circle>
+                  <path d="M12 7v4"></path>
+                  <path d="M12 11 6 15"></path>
+                  <path d="m12 11 6 4"></path>
+                </svg>
+              </button>
             </div>
           </header>
           <div class="chat-history-menu" id="chat-history-menu" hidden></div>
           <div class="quiz-menu" id="quiz-menu" hidden></div>
           <div class="highlight-menu" id="highlight-menu" hidden></div>
+          <div class="mindmap-menu" id="mindmap-menu" hidden></div>
           <div class="message-list" id="message-list" aria-live="polite"></div>
           <form class="chat-form" id="chat-form">
+            <div class="note-reference-list" id="note-reference-list"></div>
             <textarea
               id="chat-input"
               rows="1"
@@ -361,6 +379,6 @@
     </div>
 
     <script src="/slides-manifest.js"></script>
-    <script src="/app.js?v=20260531-highlights"></script>
+    <script src="/app.js?v=20260531-mindmap"></script>
   </body>
 </html>
