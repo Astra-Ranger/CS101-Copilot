@@ -759,6 +759,10 @@
     return Math.min(MAX_SLIDE_ZOOM, Math.max(MIN_SLIDE_ZOOM, value));
   }
 
+  function clampUnit(value) {
+    return Math.min(1, Math.max(0, value));
+  }
+
   function getSlideStack() {
     return elements.slideList.querySelector(".slide-stack");
   }
@@ -795,18 +799,35 @@
       return;
     }
 
-    const rect = elements.slideList.getBoundingClientRect();
-    const anchorX = anchorPoint ? anchorPoint.clientX - rect.left : rect.width / 2;
-    const anchorY = anchorPoint ? anchorPoint.clientY - rect.top : rect.height / 2;
+    const viewportRect = elements.slideList.getBoundingClientRect();
+    const anchor = anchorPoint || {
+      clientX: viewportRect.left + viewportRect.width / 2,
+      clientY: viewportRect.top + viewportRect.height / 2,
+    };
+    const anchorX = anchor.clientX - viewportRect.left;
+    const anchorY = anchor.clientY - viewportRect.top;
     const contentX = elements.slideList.scrollLeft + anchorX;
     const contentY = elements.slideList.scrollTop + anchorY;
+    const anchorRatioX = elements.slideList.scrollWidth
+      ? clampUnit(contentX / elements.slideList.scrollWidth)
+      : 0.5;
+    const anchorRatioY = elements.slideList.scrollHeight
+      ? clampUnit(contentY / elements.slideList.scrollHeight)
+      : 0.5;
+    const previousScrollBehavior = elements.slideList.style.scrollBehavior;
 
+    elements.slideList.style.scrollBehavior = "auto";
     state.slideZoom = zoom;
     applySlideZoom();
 
-    const scale = zoom / previousZoom;
-    elements.slideList.scrollLeft = contentX * scale - anchorX;
-    elements.slideList.scrollTop = contentY * scale - anchorY;
+    elements.slideList.scrollLeft =
+      anchorRatioX * elements.slideList.scrollWidth - anchorX;
+    elements.slideList.scrollTop =
+      anchorRatioY * elements.slideList.scrollHeight - anchorY;
+
+    window.requestAnimationFrame(() => {
+      elements.slideList.style.scrollBehavior = previousScrollBehavior;
+    });
   }
 
   function handleSlidePointerDown(event) {
@@ -867,6 +888,7 @@
     }
 
     event.preventDefault();
+    event.stopPropagation();
 
     const direction = event.deltaY < 0 ? 1 : -1;
     zoomSlides(
