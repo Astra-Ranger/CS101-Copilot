@@ -58,7 +58,13 @@ from backend.conversation_store import (  # noqa: E402
     write_notes_store as write_notes_store_to_path,
 )
 from backend.notebook_service import NotebookService  # noqa: E402
-from backend.rag_service import CourseRAGService  # noqa: E402
+from backend.rag_service import (  # noqa: E402
+    CourseRAGService,
+    HighlightContextUnavailable,
+    HighlightGenerationError,
+    QuizContextUnavailable,
+    QuizGenerationError,
+)
 from backend.config_loader import load_json_config  # noqa: E402
 from backend.settings_store import (  # noqa: E402
     public_settings as public_user_settings,
@@ -407,6 +413,68 @@ def save_course_note(course_id: str):
             "savedAt": saved_at,
         }
     )
+
+
+@app.post("/api/courses/<path:course_id>/questions/generate")
+def generate_course_questions(course_id: str):
+    payload = request.get_json(silent=True) or {}
+
+    if not isinstance(payload, dict):
+        return error_response(
+            400,
+            "INVALID_QUESTION_REQUEST",
+            "Request body must be a JSON object.",
+        )
+
+    try:
+        result = asyncio.run(rag_service.generate_questions(course_id, payload))
+    except ValueError as exc:
+        return error_response(400, "INVALID_QUESTION_REQUEST", str(exc))
+    except CourseNotFound as exc:
+        return error_response(404, "COURSE_NOT_FOUND", str(exc))
+    except SlideCatalogError as exc:
+        return error_response(500, "SLIDE_CATALOG_ERROR", str(exc))
+    except QuizContextUnavailable as exc:
+        return error_response(503, "QUIZ_CONTEXT_UNAVAILABLE", str(exc))
+    except QuizGenerationError as exc:
+        app.logger.exception("Question generation failed")
+        return error_response(502, "QUIZ_GENERATION_FAILED", str(exc))
+    except Exception:
+        app.logger.exception("Unexpected question generation failure")
+        return error_response(502, "QUIZ_GENERATION_FAILED", "Question generation failed.")
+
+    return jsonify(result)
+
+
+@app.post("/api/courses/<path:course_id>/highlights/generate")
+def generate_course_highlights(course_id: str):
+    payload = request.get_json(silent=True) or {}
+
+    if not isinstance(payload, dict):
+        return error_response(
+            400,
+            "INVALID_HIGHLIGHT_REQUEST",
+            "Request body must be a JSON object.",
+        )
+
+    try:
+        result = asyncio.run(rag_service.generate_highlights(course_id, payload))
+    except ValueError as exc:
+        return error_response(400, "INVALID_HIGHLIGHT_REQUEST", str(exc))
+    except CourseNotFound as exc:
+        return error_response(404, "COURSE_NOT_FOUND", str(exc))
+    except SlideCatalogError as exc:
+        return error_response(500, "SLIDE_CATALOG_ERROR", str(exc))
+    except HighlightContextUnavailable as exc:
+        return error_response(503, "HIGHLIGHT_CONTEXT_UNAVAILABLE", str(exc))
+    except HighlightGenerationError as exc:
+        app.logger.exception("Highlight generation failed")
+        return error_response(502, "HIGHLIGHT_GENERATION_FAILED", str(exc))
+    except Exception:
+        app.logger.exception("Unexpected highlight generation failure")
+        return error_response(502, "HIGHLIGHT_GENERATION_FAILED", "Highlight generation failed.")
+
+    return jsonify(result)
 
 
 @app.get("/api/notebooks")

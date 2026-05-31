@@ -26,6 +26,21 @@
     activeConversationId: null,
     conversations: [],
     isHistoryOpen: false,
+    quiz: {
+      isOpen: false,
+      isGenerating: false,
+      count: 5,
+      questions: [],
+      selectedAnswers: {},
+      error: "",
+    },
+    highlights: {
+      isOpen: false,
+      isGenerating: false,
+      count: 8,
+      items: [],
+      error: "",
+    },
     isStartingConversation: false,
     starterStatus: "",
     isSending: false,
@@ -100,6 +115,10 @@
     newChatButton: document.querySelector("#new-chat-button"),
     chatHistoryButton: document.querySelector("#chat-history-button"),
     chatHistoryMenu: document.querySelector("#chat-history-menu"),
+    quizButton: document.querySelector("#quiz-button"),
+    quizMenu: document.querySelector("#quiz-menu"),
+    highlightButton: document.querySelector("#highlight-button"),
+    highlightMenu: document.querySelector("#highlight-menu"),
     notebookTitle: document.querySelector("#notebook-title"),
     noteSurface: document.querySelector(".note-surface"),
     noteEditor: document.querySelector("#note-editor"),
@@ -271,6 +290,48 @@
       console.warn("使用静态课件页列表作为回退。", error);
       return buildDeckFromManifest(courseId);
     }
+  }
+
+  async function generateCourseQuestions(courseId, payload) {
+    const response = await fetch(
+      `/api/courses/${encodeURIComponent(courseId)}/questions/generate`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(payload),
+      },
+    );
+    const data = await response.json().catch(() => ({}));
+
+    if (!response.ok) {
+      const message = data.message || data.error || "question generation api unavailable";
+      throw new Error(message);
+    }
+
+    return data;
+  }
+
+  async function generateCourseHighlights(courseId, payload) {
+    const response = await fetch(
+      `/api/courses/${encodeURIComponent(courseId)}/highlights/generate`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(payload),
+      },
+    );
+    const data = await response.json().catch(() => ({}));
+
+    if (!response.ok) {
+      const message = data.message || data.error || "highlight generation api unavailable";
+      throw new Error(message);
+    }
+
+    return data;
   }
 
   async function fetchChatConversations(courseId) {
@@ -1441,6 +1502,343 @@
     elements.chatHistoryMenu.append(dialog);
   }
 
+  function renderQuizMenu() {
+    elements.quizMenu.innerHTML = "";
+    elements.quizMenu.hidden = !state.quiz.isOpen;
+    elements.quizButton.classList.toggle("is-active", state.quiz.isOpen);
+
+    if (!state.quiz.isOpen) {
+      return;
+    }
+
+    const dialog = document.createElement("div");
+    dialog.className = "chat-history-dialog quiz-dialog";
+
+    const header = document.createElement("div");
+    header.className = "chat-history-dialog-header";
+
+    const titleWrap = document.createElement("div");
+    titleWrap.className = "quiz-title-wrap";
+
+    const title = document.createElement("div");
+    title.className = "chat-history-dialog-title";
+    title.textContent = "练习题";
+
+    const subtitle = document.createElement("span");
+    subtitle.className = "quiz-subtitle";
+    subtitle.textContent = state.currentDeck ? state.currentDeck.title : "当前课程";
+
+    titleWrap.append(title, subtitle);
+
+    const closeButton = document.createElement("button");
+    closeButton.type = "button";
+    closeButton.className = "chat-history-close";
+    closeButton.setAttribute("aria-label", "关闭练习题");
+    closeButton.textContent = "×";
+    closeButton.addEventListener("click", () => {
+      state.quiz.isOpen = false;
+      renderQuizMenu();
+    });
+
+    header.append(titleWrap, closeButton);
+    dialog.append(header);
+
+    const controls = document.createElement("div");
+    controls.className = "quiz-controls";
+
+    const countLabel = document.createElement("label");
+    countLabel.className = "quiz-count-field";
+    countLabel.textContent = "数量";
+
+    const countSelect = document.createElement("select");
+    [3, 5, 8].forEach((count) => {
+      const option = document.createElement("option");
+      option.value = String(count);
+      option.textContent = `${count} 道`;
+      option.selected = state.quiz.count === count;
+      countSelect.append(option);
+    });
+    countSelect.addEventListener("change", () => {
+      state.quiz.count = Number(countSelect.value) || 5;
+    });
+    countLabel.append(countSelect);
+
+    const typeBadge = document.createElement("span");
+    typeBadge.className = "quiz-type-badge";
+    typeBadge.textContent = "单选题 + 判断题";
+
+    const generateButton = document.createElement("button");
+    generateButton.type = "button";
+    generateButton.className = "quiz-generate-button";
+    generateButton.disabled = state.quiz.isGenerating;
+    generateButton.textContent = state.quiz.isGenerating ? "生成中..." : "生成题目";
+    generateButton.addEventListener("click", () => {
+      void handleGenerateQuizClick();
+    });
+
+    controls.append(countLabel, typeBadge, generateButton);
+    dialog.append(controls);
+
+    if (state.quiz.error) {
+      const error = document.createElement("div");
+      error.className = "quiz-error";
+      error.textContent = state.quiz.error;
+      dialog.append(error);
+    }
+
+    if (!state.quiz.questions.length && !state.quiz.isGenerating) {
+      const empty = document.createElement("div");
+      empty.className = "chat-history-empty";
+      empty.textContent = "选择数量后生成练习题。";
+      dialog.append(empty);
+    }
+
+    if (state.quiz.isGenerating) {
+      const loading = document.createElement("div");
+      loading.className = "chat-inline-status";
+      loading.textContent = "正在读取课程资料并生成题目...";
+      dialog.append(loading);
+    }
+
+    state.quiz.questions.forEach((question, index) => {
+      dialog.append(renderQuizQuestion(question, index));
+    });
+
+    elements.quizMenu.append(dialog);
+  }
+
+  function renderQuizQuestion(question, index) {
+    const card = document.createElement("article");
+    card.className = "quiz-question-card";
+
+    const stem = document.createElement("div");
+    stem.className = "quiz-question-stem";
+    stem.textContent = `${index + 1}. ${question.question || ""}`;
+    card.append(stem);
+
+    const selected = state.quiz.selectedAnswers[question.id];
+    const options = Array.isArray(question.options) ? question.options : [];
+    const optionList = document.createElement("div");
+    optionList.className = "quiz-options";
+
+    options.forEach((option, optionIndex) => {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "quiz-option";
+      button.textContent = option;
+
+      if (selected !== undefined) {
+        button.disabled = true;
+        button.classList.toggle("selected", selected === optionIndex);
+        button.classList.toggle("correct", question.answerIndex === optionIndex);
+        button.classList.toggle(
+          "wrong",
+          selected === optionIndex && selected !== question.answerIndex,
+        );
+      }
+
+      button.addEventListener("click", () => {
+        state.quiz.selectedAnswers[question.id] = optionIndex;
+        renderQuizMenu();
+      });
+      optionList.append(button);
+    });
+
+    card.append(optionList);
+
+    if (selected !== undefined) {
+      const result = document.createElement("div");
+      result.className = selected === question.answerIndex ? "quiz-result correct" : "quiz-result wrong";
+      result.textContent =
+        selected === question.answerIndex
+          ? "回答正确"
+          : `回答错误，正确答案是：${options[question.answerIndex] || ""}`;
+      card.append(result);
+
+      const explanation = document.createElement("p");
+      explanation.className = "quiz-explanation";
+      explanation.textContent = question.explanation || "";
+      card.append(explanation);
+    }
+
+    if (Array.isArray(question.citations) && question.citations.length) {
+      const citations = document.createElement("div");
+      citations.className = "quiz-citations";
+      question.citations.forEach((citation) => {
+        const button = document.createElement("button");
+        button.type = "button";
+        button.className = "citation-button";
+        button.textContent = citation.label || `P${citation.pageNumber}`;
+        button.dataset.tooltip = `跳转到第 ${citation.pageNumber} 页`;
+        button.addEventListener("click", () => {
+          void navigateToCitation(state.currentCourseId, citation.pageNumber);
+        });
+        citations.append(button);
+      });
+      card.append(citations);
+    }
+
+    return card;
+  }
+
+  function renderHighlightMenu() {
+    elements.highlightMenu.innerHTML = "";
+    elements.highlightMenu.hidden = !state.highlights.isOpen;
+    elements.highlightButton.classList.toggle("is-active", state.highlights.isOpen);
+
+    if (!state.highlights.isOpen) {
+      return;
+    }
+
+    const dialog = document.createElement("div");
+    dialog.className = "chat-history-dialog highlight-dialog";
+
+    const header = document.createElement("div");
+    header.className = "chat-history-dialog-header";
+
+    const titleWrap = document.createElement("div");
+    titleWrap.className = "quiz-title-wrap";
+
+    const title = document.createElement("div");
+    title.className = "chat-history-dialog-title";
+    title.textContent = "划重点";
+
+    const subtitle = document.createElement("span");
+    subtitle.className = "quiz-subtitle";
+    subtitle.textContent = state.currentDeck ? state.currentDeck.title : "当前课程";
+
+    titleWrap.append(title, subtitle);
+
+    const closeButton = document.createElement("button");
+    closeButton.type = "button";
+    closeButton.className = "chat-history-close";
+    closeButton.setAttribute("aria-label", "关闭划重点");
+    closeButton.textContent = "×";
+    closeButton.addEventListener("click", () => {
+      state.highlights.isOpen = false;
+      renderHighlightMenu();
+    });
+
+    header.append(titleWrap, closeButton);
+    dialog.append(header);
+
+    const controls = document.createElement("div");
+    controls.className = "quiz-controls";
+
+    const countLabel = document.createElement("label");
+    countLabel.className = "quiz-count-field";
+    countLabel.textContent = "数量";
+
+    const countSelect = document.createElement("select");
+    [5, 8, 10].forEach((count) => {
+      const option = document.createElement("option");
+      option.value = String(count);
+      option.textContent = `${count} 条`;
+      option.selected = state.highlights.count === count;
+      countSelect.append(option);
+    });
+    countSelect.addEventListener("change", () => {
+      state.highlights.count = Number(countSelect.value) || 8;
+    });
+    countLabel.append(countSelect);
+
+    const typeBadge = document.createElement("span");
+    typeBadge.className = "quiz-type-badge";
+    typeBadge.textContent = "当前课程重点";
+
+    const generateButton = document.createElement("button");
+    generateButton.type = "button";
+    generateButton.className = "quiz-generate-button";
+    generateButton.disabled = state.highlights.isGenerating;
+    generateButton.textContent = state.highlights.isGenerating ? "提炼中..." : "划重点";
+    generateButton.addEventListener("click", () => {
+      void handleGenerateHighlightsClick();
+    });
+
+    controls.append(countLabel, typeBadge, generateButton);
+    dialog.append(controls);
+
+    if (state.highlights.error) {
+      const error = document.createElement("div");
+      error.className = "quiz-error";
+      error.textContent = state.highlights.error;
+      dialog.append(error);
+    }
+
+    if (!state.highlights.items.length && !state.highlights.isGenerating) {
+      const empty = document.createElement("div");
+      empty.className = "chat-history-empty";
+      empty.textContent = "选择数量后提炼课程重点。";
+      dialog.append(empty);
+    }
+
+    if (state.highlights.isGenerating) {
+      const loading = document.createElement("div");
+      loading.className = "chat-inline-status";
+      loading.textContent = "正在读取课程资料并提炼重点...";
+      dialog.append(loading);
+    }
+
+    state.highlights.items.forEach((highlight, index) => {
+      dialog.append(renderHighlightItem(highlight, index));
+    });
+
+    elements.highlightMenu.append(dialog);
+  }
+
+  function renderHighlightItem(highlight, index) {
+    const card = document.createElement("article");
+    card.className = "highlight-card";
+
+    const titleRow = document.createElement("div");
+    titleRow.className = "highlight-title-row";
+
+    const title = document.createElement("div");
+    title.className = "highlight-title";
+    title.textContent = `${index + 1}. ${highlight.title || ""}`;
+
+    const importance = document.createElement("span");
+    importance.className = `highlight-importance ${highlight.importance || "medium"}`;
+    importance.textContent = highlightImportanceLabel(highlight.importance);
+
+    titleRow.append(title, importance);
+    card.append(titleRow);
+
+    const summary = document.createElement("p");
+    summary.className = "highlight-summary";
+    summary.textContent = highlight.summary || "";
+    card.append(summary);
+
+    if (Array.isArray(highlight.citations) && highlight.citations.length) {
+      const citations = document.createElement("div");
+      citations.className = "quiz-citations";
+      highlight.citations.forEach((citation) => {
+        const button = document.createElement("button");
+        button.type = "button";
+        button.className = "citation-button";
+        button.textContent = citation.label || `P${citation.pageNumber}`;
+        button.dataset.tooltip = `跳转到第 ${citation.pageNumber} 页`;
+        button.addEventListener("click", () => {
+          void navigateToCitation(state.currentCourseId, citation.pageNumber);
+        });
+        citations.append(button);
+      });
+      card.append(citations);
+    }
+
+    return card;
+  }
+
+  function highlightImportanceLabel(value) {
+    if (value === "high") {
+      return "高";
+    }
+    if (value === "low") {
+      return "补充";
+    }
+    return "中";
+  }
+
   function notebookSummaryFromNotebook(notebook) {
     const content = String(notebook.content || "");
     return {
@@ -2418,12 +2816,18 @@
     state.activeSlidePage = 1;
     state.activeConversationId = null;
     state.isHistoryOpen = false;
+    state.quiz.questions = [];
+    state.quiz.selectedAnswers = {};
+    state.quiz.error = "";
+    state.highlights.items = [];
+    state.highlights.error = "";
     window.history.replaceState(
       {},
       "",
       `/course/${encodeURIComponent(state.currentCourseId)}`,
     );
     await loadCurrentCourse();
+    renderQuizMenu();
     await loadLatestConversationForCurrentCourse();
   }
 
@@ -2730,7 +3134,93 @@
 
   function handleHistoryClick() {
     state.isHistoryOpen = !state.isHistoryOpen;
+    if (state.isHistoryOpen) {
+      state.quiz.isOpen = false;
+      state.highlights.isOpen = false;
+      renderQuizMenu();
+      renderHighlightMenu();
+    }
     renderHistoryMenu();
+  }
+
+  function handleQuizClick() {
+    state.quiz.isOpen = !state.quiz.isOpen;
+    if (state.quiz.isOpen) {
+      state.isHistoryOpen = false;
+      state.highlights.isOpen = false;
+      renderHistoryMenu();
+      renderHighlightMenu();
+    }
+    renderQuizMenu();
+  }
+
+  function handleHighlightClick() {
+    state.highlights.isOpen = !state.highlights.isOpen;
+    if (state.highlights.isOpen) {
+      state.isHistoryOpen = false;
+      state.quiz.isOpen = false;
+      renderHistoryMenu();
+      renderQuizMenu();
+    }
+    renderHighlightMenu();
+  }
+
+  async function handleGenerateQuizClick() {
+    if (state.quiz.isGenerating) {
+      return;
+    }
+
+    state.quiz.isGenerating = true;
+    state.quiz.error = "";
+    state.quiz.selectedAnswers = {};
+    renderQuizMenu();
+
+    try {
+      const data = await generateCourseQuestions(state.currentCourseId, {
+        count: state.quiz.count,
+        types: ["single_choice", "true_false"],
+        currentNote: state.noteContent,
+      });
+      state.quiz.questions = Array.isArray(data.questions) ? data.questions : [];
+      if (!state.quiz.questions.length) {
+        state.quiz.error = "没有生成可用题目，请稍后再试。";
+      }
+    } catch (error) {
+      console.error(error);
+      state.quiz.questions = [];
+      state.quiz.error = error.message || "题目生成失败，请稍后重试。";
+    } finally {
+      state.quiz.isGenerating = false;
+      renderQuizMenu();
+    }
+  }
+
+  async function handleGenerateHighlightsClick() {
+    if (state.highlights.isGenerating) {
+      return;
+    }
+
+    state.highlights.isGenerating = true;
+    state.highlights.error = "";
+    renderHighlightMenu();
+
+    try {
+      const data = await generateCourseHighlights(state.currentCourseId, {
+        count: state.highlights.count,
+        currentNote: state.noteContent,
+      });
+      state.highlights.items = Array.isArray(data.highlights) ? data.highlights : [];
+      if (!state.highlights.items.length) {
+        state.highlights.error = "没有提炼出可用重点，请稍后再试。";
+      }
+    } catch (error) {
+      console.error(error);
+      state.highlights.items = [];
+      state.highlights.error = error.message || "划重点失败，请稍后重试。";
+    } finally {
+      state.highlights.isGenerating = false;
+      renderHighlightMenu();
+    }
   }
 
   function handleNewChatClick() {
@@ -3609,6 +4099,8 @@
     });
     elements.newChatButton.addEventListener("click", handleNewChatClick);
     elements.chatHistoryButton.addEventListener("click", handleHistoryClick);
+    elements.quizButton.addEventListener("click", handleQuizClick);
+    elements.highlightButton.addEventListener("click", handleHighlightClick);
     elements.noteEditor.addEventListener("input", handleNoteInput);
     elements.noteEditor.addEventListener("keydown", handleNoteEditorKeydown);
     elements.noteEditor.addEventListener("focus", handleNoteFocus);
@@ -3641,6 +4133,8 @@
     renderCourseSelect();
     await initNotes();
     await loadCurrentCourse();
+    renderQuizMenu();
+    renderHighlightMenu();
     await loadLatestConversationForCurrentCourse();
   }
 

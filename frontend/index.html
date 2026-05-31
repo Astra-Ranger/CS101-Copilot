@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>CS101_Copilot</title>
-    <link rel="stylesheet" href="/styles.css?v=20260528-logo-small" />
+    <link rel="stylesheet" href="/styles.css?v=20260531-highlights" />
     <script>
       window.MathJax = {
         tex: {
@@ -314,9 +314,38 @@
                   <path d="M12 7v5l3 2"></path>
                 </svg>
               </button>
+              <button
+                id="quiz-button"
+                class="chat-icon-button"
+                type="button"
+                aria-label="生成练习题"
+                data-tooltip="生成练习题"
+              >
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <rect x="4" y="3" width="16" height="18" rx="2"></rect>
+                  <path d="M8 7h8"></path>
+                  <path d="M8 11h8"></path>
+                  <path d="M8 15h5"></path>
+                </svg>
+              </button>
+              <button
+                id="highlight-button"
+                class="chat-icon-button"
+                type="button"
+                aria-label="划重点"
+                data-tooltip="划重点"
+              >
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="M4 19h16"></path>
+                  <path d="M7 15l8.5-8.5 2 2L9 17H7z"></path>
+                  <path d="M13.5 8.5l2 2"></path>
+                </svg>
+              </button>
             </div>
           </header>
           <div class="chat-history-menu" id="chat-history-menu" hidden></div>
+          <div class="quiz-menu" id="quiz-menu" hidden></div>
+          <div class="highlight-menu" id="highlight-menu" hidden></div>
           <div class="message-list" id="message-list" aria-live="polite"></div>
           <form class="chat-form" id="chat-form">
             <textarea
@@ -332,6 +361,6 @@
     </div>
 
     <script src="/slides-manifest.js"></script>
-    <script src="/app.js?v=20260524-notebooks"></script>
+    <script src="/app.js?v=20260531-highlights"></script>
   </body>
 </html>

@@ -7,10 +7,11 @@ import logging
 import os
 import re
 from pathlib import Path
+from datetime import datetime, timezone
 from typing import Any, AsyncIterator, Literal, Optional
 from urllib.parse import quote
 
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, Field, ValidationError, validator
 
 from backend.config_loader import load_json_config
 from backend.model_client import ChatModelClient, ModelRegistry
@@ -104,6 +105,57 @@ class NoteAutocompleteRequest(BaseModel):
     cursorBefore: str = Field(default="")
     cursorAfter: str = Field(default="")
     lastAiAnswer: str = Field(default="")
+
+
+class QuestionGenerateRequest(BaseModel):
+    count: int = Field(default=5, ge=1, le=8)
+    types: list[Literal["single_choice", "true_false"]] = Field(
+        default_factory=lambda: ["single_choice", "true_false"]
+    )
+    currentNote: str = Field(default="")
+
+    @validator("types")
+    def validate_types(cls, value: list[str]) -> list[str]:
+        if not value:
+            raise ValueError("At least one question type is required.")
+        return list(dict.fromkeys(value))
+
+
+class RawGeneratedQuestion(BaseModel):
+    type: Literal["single_choice", "true_false"]
+    question: str
+    options: list[str] = Field(default_factory=list)
+    answerIndex: int
+    explanation: str
+    sourceIds: list[str] = Field(default_factory=list)
+
+
+class HighlightGenerateRequest(BaseModel):
+    count: int = Field(default=8, ge=1, le=10)
+    currentNote: str = Field(default="")
+
+
+class RawGeneratedHighlight(BaseModel):
+    title: str
+    summary: str
+    importance: Literal["high", "medium", "low"] = "medium"
+    sourceIds: list[str] = Field(default_factory=list)
+
+
+class QuizContextUnavailable(Exception):
+    pass
+
+
+class QuizGenerationError(Exception):
+    pass
+
+
+class HighlightContextUnavailable(Exception):
+    pass
+
+
+class HighlightGenerationError(Exception):
+    pass
 
 
 class CourseRAGService:
@@ -212,6 +264,76 @@ class CourseRAGService:
             autocomplete_request.cursorBefore,
         )
         return {"suggestion": suggestion}
+
+    async def generate_questions(self, course_id: str, request_data: dict[str, Any]) -> dict[str, Any]:
+        try:
+            quiz_request = self._model_validate(QuestionGenerateRequest, request_data)
+        except ValidationError as exc:
+            raise ValueError("Question generation request is invalid.") from exc
+
+        deck = await asyncio.to_thread(build_course_deck, course_id)
+        contexts = await asyncio.to_thread(self._quiz_contexts_from_chroma, deck)
+        if not contexts:
+            raise QuizContextUnavailable("当前课程没有可用文本资料，无法基于课件生成题目。")
+
+        messages = self._build_question_generation_messages(deck, quiz_request, contexts)
+
+        try:
+            response = await self._complete_task("question_generation", messages)
+            content = self._extract_message_content(response)
+            data = json.loads(self._extract_json_object(content))
+            questions = self._normalize_generated_questions(
+                data,
+                quiz_request,
+                contexts,
+                str(deck.get("courseId") or course_id),
+            )
+        except QuizGenerationError:
+            raise
+        except Exception as exc:
+            raise QuizGenerationError("Question generation failed.") from exc
+
+        return {
+            "courseId": course_id,
+            "resolvedCourseId": str(deck.get("resolvedCourseId") or deck.get("courseId") or course_id),
+            "generatedAt": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+            "questions": questions,
+        }
+
+    async def generate_highlights(self, course_id: str, request_data: dict[str, Any]) -> dict[str, Any]:
+        try:
+            highlight_request = self._model_validate(HighlightGenerateRequest, request_data)
+        except ValidationError as exc:
+            raise ValueError("Highlight generation request is invalid.") from exc
+
+        deck = await asyncio.to_thread(build_course_deck, course_id)
+        contexts = await asyncio.to_thread(self._quiz_contexts_from_chroma, deck)
+        if not contexts:
+            raise HighlightContextUnavailable("当前课程没有可用文本资料，无法基于课件划重点。")
+
+        messages = self._build_highlight_generation_messages(deck, highlight_request, contexts)
+
+        try:
+            response = await self._complete_task("highlight_generation", messages)
+            content = self._extract_message_content(response)
+            data = json.loads(self._extract_json_object(content))
+            highlights = self._normalize_generated_highlights(
+                data,
+                highlight_request,
+                contexts,
+                str(deck.get("courseId") or course_id),
+            )
+        except HighlightGenerationError:
+            raise
+        except Exception as exc:
+            raise HighlightGenerationError("Highlight generation failed.") from exc
+
+        return {
+            "courseId": course_id,
+            "resolvedCourseId": str(deck.get("resolvedCourseId") or deck.get("courseId") or course_id),
+            "generatedAt": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+            "highlights": highlights,
+        }
 
     async def _course_starter_messages(self, course_id: str) -> tuple[list[dict[str, Any]], str]:
         deck = await asyncio.to_thread(build_course_deck, course_id)
@@ -575,6 +697,322 @@ class CourseRAGService:
                 chunks.append(content)
 
         return self._trim_text("\n\n".join(chunks), 2000)
+
+    def _quiz_contexts_from_chroma(self, deck: dict[str, Any]) -> list[dict[str, Any]]:
+        source = self._course_source_from_deck(deck)
+        if not source:
+            return []
+
+        candidates: list[dict[str, Any]] = []
+
+        try:
+            import chromadb
+        except ImportError as exc:
+            logger.warning("Missing ChromaDB dependency for quiz generation: %s", exc)
+        except Exception as exc:
+            logger.warning("Failed to import ChromaDB for quiz generation: %s", exc)
+        else:
+            try:
+                client = chromadb.PersistentClient(path=str(self.chroma_dir))
+                collection = client.get_collection(self.chroma_collection)
+                result = collection.get(
+                    where={"source": source},
+                    include=["documents", "metadatas"],
+                    limit=1000,
+                )
+                documents = result.get("documents") or []
+                metadatas = result.get("metadatas") or []
+                candidates = self._quiz_context_candidates(documents, metadatas)
+            except Exception as exc:
+                logger.warning("Failed to read quiz context from Chroma: %s", exc)
+
+        if not candidates:
+            candidates = self._quiz_context_candidates_from_export(source)
+
+        return self._quiz_contexts_from_candidates(candidates)
+
+    def _quiz_context_candidates(self, documents: list[Any], metadatas: list[Any]) -> list[dict[str, Any]]:
+        candidates: list[dict[str, Any]] = []
+        seen: set[tuple[int, str]] = set()
+
+        for document, metadata in zip(documents, metadatas):
+            if not isinstance(metadata, dict):
+                continue
+
+            page = self._page_start(metadata.get("page"))
+            content = str(document or "").strip()
+            if page is None or not content:
+                continue
+
+            dedupe_key = (page, content[:160])
+            if dedupe_key in seen:
+                continue
+            seen.add(dedupe_key)
+
+            candidates.append(
+                {
+                    "page": page,
+                    "section": str(metadata.get("Section") or "").strip(),
+                    "topic": str(metadata.get("Topic") or "").strip(),
+                    "content": content,
+                }
+            )
+
+        return sorted(candidates, key=lambda item: (item["page"], item["section"], item["topic"]))
+
+    def _quiz_context_candidates_from_export(self, source: str) -> list[dict[str, Any]]:
+        export_path = REPO_ROOT / "chroma_db_export.md"
+        if not export_path.exists():
+            return []
+
+        try:
+            export_text = export_path.read_text(encoding="utf-8")
+        except OSError as exc:
+            logger.warning("Failed to read Chroma export for quiz generation: %s", exc)
+            return []
+
+        documents: list[str] = []
+        metadatas: list[dict[str, Any]] = []
+        block_pattern = re.compile(
+            r"### metadata\s*```json\s*(\{.*?\})\s*```\s*### document\s*```markdown\s*(.*?)\s*```",
+            re.DOTALL,
+        )
+
+        for match in block_pattern.finditer(export_text):
+            try:
+                metadata = json.loads(match.group(1))
+            except json.JSONDecodeError:
+                continue
+
+            if not isinstance(metadata, dict) or metadata.get("source") != source:
+                continue
+
+            metadatas.append(metadata)
+            documents.append(match.group(2).strip())
+
+        return self._quiz_context_candidates(documents, metadatas)
+
+    def _quiz_contexts_from_candidates(self, candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        candidates = sorted(candidates, key=lambda item: (item["page"], item["section"], item["topic"]))
+
+        contexts: list[dict[str, Any]] = []
+        total_chars = 0
+        for item in candidates:
+            if len(contexts) >= 24 or total_chars >= 16_000:
+                break
+
+            source_id = f"S{len(contexts) + 1}"
+            label = f"P{item['page']}"
+            heading = " / ".join(part for part in (item["section"], item["topic"]) if part)
+            content = self._trim_text(item["content"], 900)
+            total_chars += len(content)
+            contexts.append(
+                {
+                    "sourceId": source_id,
+                    "pageNumber": item["page"],
+                    "label": label,
+                    "heading": heading,
+                    "content": content,
+                }
+            )
+
+        return contexts
+
+    def _build_question_generation_messages(
+        self,
+        deck: dict[str, Any],
+        quiz_request: QuestionGenerateRequest,
+        contexts: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        course_name = str(deck.get("title") or deck.get("courseId") or "CS101")
+        type_text = ", ".join(quiz_request.types)
+        context_text = "\n\n".join(
+            (
+                f"[{item['sourceId']}] page={item['pageNumber']} label={item['label']}"
+                f"{' heading=' + item['heading'] if item.get('heading') else ''}\n"
+                f"{item['content']}"
+            )
+            for item in contexts
+        )
+        note_text = self._trim_text(quiz_request.currentNote, 2500) or "无"
+        prompt = self.prompts["question_generation_user"].format(
+            course_name=course_name,
+            count=quiz_request.count,
+            question_types=type_text,
+            context_text=context_text,
+            note_text=note_text,
+        )
+
+        return [
+            {"role": "system", "content": self.prompts["question_generation_system"]},
+            {"role": "user", "content": prompt},
+        ]
+
+    def _build_highlight_generation_messages(
+        self,
+        deck: dict[str, Any],
+        highlight_request: HighlightGenerateRequest,
+        contexts: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        course_name = str(deck.get("title") or deck.get("courseId") or "CS101")
+        context_text = "\n\n".join(
+            (
+                f"[{item['sourceId']}] page={item['pageNumber']} label={item['label']}"
+                f"{' heading=' + item['heading'] if item.get('heading') else ''}\n"
+                f"{item['content']}"
+            )
+            for item in contexts
+        )
+        note_text = self._trim_text(highlight_request.currentNote, 2500) or "无"
+        prompt = self.prompts["highlight_generation_user"].format(
+            course_name=course_name,
+            count=highlight_request.count,
+            context_text=context_text,
+            note_text=note_text,
+        )
+
+        return [
+            {"role": "system", "content": self.prompts["highlight_generation_system"]},
+            {"role": "user", "content": prompt},
+        ]
+
+    def _normalize_generated_questions(
+        self,
+        data: dict[str, Any],
+        quiz_request: QuestionGenerateRequest,
+        contexts: list[dict[str, Any]],
+        course_id: str,
+    ) -> list[dict[str, Any]]:
+        raw_questions = data.get("questions") if isinstance(data, dict) else None
+        if not isinstance(raw_questions, list):
+            raise QuizGenerationError("Generated response does not contain questions.")
+
+        source_map = {item["sourceId"]: item for item in contexts}
+        normalized: list[dict[str, Any]] = []
+
+        for raw_item in raw_questions:
+            try:
+                item = self._model_validate(RawGeneratedQuestion, raw_item)
+            except ValidationError as exc:
+                raise QuizGenerationError("Generated question has invalid shape.") from exc
+
+            question = " ".join(item.question.strip().split())
+            explanation = item.explanation.strip()
+            if not question or not explanation:
+                raise QuizGenerationError("Generated question is missing text.")
+
+            if item.type == "single_choice":
+                options = [" ".join(option.strip().split()) for option in item.options]
+                if len(options) != 4 or any(not option for option in options):
+                    raise QuizGenerationError("Single choice questions must have four options.")
+            else:
+                options = ["正确", "错误"]
+
+            if item.answerIndex < 0 or item.answerIndex >= len(options):
+                raise QuizGenerationError("Generated answer index is out of range.")
+
+            source_ids = [source_id for source_id in item.sourceIds if source_id in source_map]
+            if not source_ids:
+                raise QuizGenerationError("Generated question does not cite valid course context.")
+
+            citations = []
+            seen_pages: set[int] = set()
+            for source_id in source_ids[:2]:
+                source = source_map[source_id]
+                page = int(source["pageNumber"])
+                if page in seen_pages:
+                    continue
+                seen_pages.add(page)
+                citations.append(
+                    {
+                        "pageNumber": page,
+                        "label": source["label"],
+                        "imageUrl": self._slide_image_url(course_id, page),
+                    }
+                )
+
+            normalized.append(
+                {
+                    "id": f"q_{len(normalized) + 1}",
+                    "type": item.type,
+                    "question": question[:500],
+                    "options": options,
+                    "answerIndex": item.answerIndex,
+                    "explanation": explanation[:800],
+                    "citations": citations,
+                }
+            )
+
+            if len(normalized) >= quiz_request.count:
+                break
+
+        if len(normalized) < quiz_request.count:
+            raise QuizGenerationError("Generated fewer valid questions than requested.")
+
+        return normalized
+
+    def _normalize_generated_highlights(
+        self,
+        data: dict[str, Any],
+        highlight_request: HighlightGenerateRequest,
+        contexts: list[dict[str, Any]],
+        course_id: str,
+    ) -> list[dict[str, Any]]:
+        raw_highlights = data.get("highlights") if isinstance(data, dict) else None
+        if not isinstance(raw_highlights, list):
+            raise HighlightGenerationError("Generated response does not contain highlights.")
+
+        source_map = {item["sourceId"]: item for item in contexts}
+        normalized: list[dict[str, Any]] = []
+
+        for raw_item in raw_highlights:
+            try:
+                item = self._model_validate(RawGeneratedHighlight, raw_item)
+            except ValidationError as exc:
+                raise HighlightGenerationError("Generated highlight has invalid shape.") from exc
+
+            title = " ".join(item.title.strip().split())
+            summary = item.summary.strip()
+            if not title or not summary:
+                raise HighlightGenerationError("Generated highlight is missing text.")
+
+            source_ids = [source_id for source_id in item.sourceIds if source_id in source_map]
+            if not source_ids:
+                raise HighlightGenerationError("Generated highlight does not cite valid course context.")
+
+            citations = []
+            seen_pages: set[int] = set()
+            for source_id in source_ids[:2]:
+                source = source_map[source_id]
+                page = int(source["pageNumber"])
+                if page in seen_pages:
+                    continue
+                seen_pages.add(page)
+                citations.append(
+                    {
+                        "pageNumber": page,
+                        "label": source["label"],
+                        "imageUrl": self._slide_image_url(course_id, page),
+                    }
+                )
+
+            normalized.append(
+                {
+                    "id": f"h_{len(normalized) + 1}",
+                    "title": title[:80],
+                    "summary": summary[:700],
+                    "importance": item.importance,
+                    "citations": citations,
+                }
+            )
+
+            if len(normalized) >= highlight_request.count:
+                break
+
+        if len(normalized) < highlight_request.count:
+            raise HighlightGenerationError("Generated fewer valid highlights than requested.")
+
+        return normalized
 
     def _course_source_from_deck(self, deck: dict[str, Any]) -> Optional[str]:
         resolved_course_id = str(deck.get("resolvedCourseId") or deck.get("courseId") or "")
