@@ -38,6 +38,7 @@ COURSE_QUERY_RE = re.compile(
     r"递归|循环|布尔|逻辑|流水线|网络|协议|排序|NP|加法器)"
 )
 PAGE_START_RE = re.compile(r"\d+")
+PAGE_REFERENCE_RE = re.compile(r"(?:\b[Pp]\s*|第\s*)(\d{1,3})\s*(?:页)?")
 
 
 class ChatMessage(BaseModel):
@@ -89,6 +90,7 @@ class ChatMetadata(BaseModel):
 
 class VectorSearchArgs(BaseModel):
     query: str
+    course_id: Optional[str] = None
     course_filter: Optional[str] = None
     k: int = Field(default=5, ge=1, le=8)
 
@@ -446,6 +448,9 @@ class CourseRAGService:
         decision = await self._route_query(chat_request, latest_query)
         contexts: list[dict[str, Any]] = []
         slide_image: Optional[SlideImageContext] = None
+        referenced_pages = self._page_references_from_query(latest_query)
+        if decision.target_page:
+            referenced_pages = self._dedupe_ints([decision.target_page, *referenced_pages])
 
         if decision.needs_vector_search:
             yield {"type": "status", "label": "读取知识库"}
@@ -453,6 +458,7 @@ class CourseRAGService:
                 contexts = await self.vector_search(
                     VectorSearchArgs(
                         query=latest_query,
+                        course_id=chat_request.courseId,
                         course_filter=decision.course_filter,
                     )
                 )
@@ -461,6 +467,17 @@ class CourseRAGService:
                 metadata.ragStatus = "degraded"
                 metadata.warnings.append("知识库暂不可用，已转为普通问答。")
                 yield {"type": "status", "label": "知识库暂不可用，转为普通问答"}
+
+        if referenced_pages:
+            try:
+                page_contexts = await asyncio.to_thread(
+                    self._page_contexts_from_chroma,
+                    chat_request.courseId,
+                    referenced_pages,
+                )
+                contexts = self._merge_contexts(page_contexts, contexts)
+            except Exception as exc:
+                logger.warning("Failed to load referenced page contexts: %s", exc)
 
         if contexts:
             yield {"type": "status", "label": "整理课程资料"}
@@ -523,10 +540,7 @@ class CourseRAGService:
 
     async def vector_search(self, args: VectorSearchArgs) -> list[dict[str, Any]]:
         vector_store = await asyncio.to_thread(self._get_vector_store)
-        if args.course_filter:
-            search_filter = {"Course": args.course_filter}
-        else:
-            search_filter = None
+        search_filter = self._vector_search_filter(args)
 
         def run_search() -> list[Any]:
             return vector_store.similarity_search(
@@ -547,6 +561,90 @@ class CourseRAGService:
             )
 
         return results
+
+    def _vector_search_filter(self, args: VectorSearchArgs) -> Optional[dict[str, Any]]:
+        if args.course_id:
+            try:
+                deck = build_course_deck(args.course_id)
+                source = self._course_source_from_deck(deck)
+            except (CourseNotFound, SlideCatalogError):
+                source = None
+
+            if source:
+                return {"source": source}
+
+        if args.course_filter:
+            return {"Course": args.course_filter}
+
+        return None
+
+    def _page_contexts_from_chroma(self, course_id: str, pages: list[int]) -> list[dict[str, Any]]:
+        if not pages:
+            return []
+
+        try:
+            import chromadb
+        except ImportError as exc:
+            logger.warning("Missing ChromaDB dependency for referenced pages: %s", exc)
+            return []
+
+        try:
+            deck = build_course_deck(course_id)
+        except (CourseNotFound, SlideCatalogError) as exc:
+            logger.warning("Cannot resolve course for referenced pages: %s", exc)
+            return []
+
+        source = self._course_source_from_deck(deck)
+        if not source:
+            return []
+
+        try:
+            client = chromadb.PersistentClient(path=str(self.chroma_dir))
+            collection = client.get_collection(self.chroma_collection)
+            result = collection.get(
+                where={"source": source},
+                include=["documents", "metadatas"],
+                limit=1000,
+            )
+        except Exception as exc:
+            logger.warning("Failed to load referenced pages from Chroma: %s", exc)
+            return []
+
+        wanted_pages = set(pages)
+        contexts: list[dict[str, Any]] = []
+        for document, metadata in zip(result.get("documents") or [], result.get("metadatas") or []):
+            if not isinstance(metadata, dict):
+                continue
+            if not any(self._page_range_contains(metadata.get("page"), page) for page in wanted_pages):
+                continue
+            content = str(document or "").strip()
+            if not content:
+                continue
+            contexts.append({"content": content, "metadata": dict(metadata)})
+
+        return sorted(contexts, key=lambda item: self._page_sort_key(item.get("metadata", {}).get("page")))[:8]
+
+    def _merge_contexts(
+        self,
+        primary: list[dict[str, Any]],
+        secondary: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        merged: list[dict[str, Any]] = []
+        seen: set[tuple[str, str, str]] = set()
+
+        for item in [*primary, *secondary]:
+            metadata = item.get("metadata", {}) if isinstance(item, dict) else {}
+            key = (
+                str(metadata.get("source") or ""),
+                str(metadata.get("page") or ""),
+                self._trim_text(str(item.get("content") or ""), 120),
+            )
+            if key in seen:
+                continue
+            seen.add(key)
+            merged.append(item)
+
+        return merged[:8]
 
     async def get_slide_image(self, args: SlideImageArgs) -> SlideImageContext:
         image_path = await asyncio.to_thread(get_slide_page_path, args.course_id, args.page)
@@ -729,7 +827,7 @@ class CourseRAGService:
             if not isinstance(metadata, dict):
                 continue
 
-            if self._page_start(metadata.get("page")) != page:
+            if not self._page_range_contains(metadata.get("page"), page):
                 continue
 
             content = str(document or "").strip()
@@ -1492,6 +1590,24 @@ class CourseRAGService:
                 return message.content.strip()
         return ""
 
+    def _page_references_from_query(self, query: str) -> list[int]:
+        pages = []
+        for match in PAGE_REFERENCE_RE.finditer(query or ""):
+            page = int(match.group(1))
+            if page > 0:
+                pages.append(page)
+        return self._dedupe_ints(pages)
+
+    def _dedupe_ints(self, values: list[int]) -> list[int]:
+        result: list[int] = []
+        seen: set[int] = set()
+        for value in values:
+            if value in seen:
+                continue
+            seen.add(value)
+            result.append(value)
+        return result
+
     def _page_start(self, value: Any) -> Optional[int]:
         if value is None:
             return None
@@ -1502,6 +1618,14 @@ class CourseRAGService:
 
         page = int(match.group(0))
         return page if page > 0 else None
+
+    def _page_range_contains(self, value: Any, page: int) -> bool:
+        numbers = [int(match) for match in PAGE_START_RE.findall(str(value or ""))]
+        if not numbers:
+            return False
+        if len(numbers) == 1:
+            return numbers[0] == page
+        return min(numbers[0], numbers[-1]) <= page <= max(numbers[0], numbers[-1])
 
     def _slide_image_url(self, course_id: str, page: int) -> str:
         return f"/api/slides/{quote(course_id, safe='')}/pages/{page}"
