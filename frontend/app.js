@@ -47,15 +47,19 @@
       isOpen: false,
       isGenerating: false,
       depth: 3,
+      scope: "current",
       focus: "",
       root: null,
       collapsed: {},
+      zoom: 1,
       error: "",
       d3Status: "",
     },
     isStartingConversation: false,
     starterStatus: "",
     isSending: false,
+    chatStickToBottom: true,
+    userPausedChatAutoScroll: false,
     pendingStatus: "",
     pendingStatusSince: 0,
     pendingStatusTimer: null,
@@ -153,9 +157,15 @@
   };
 
   const slidePointers = new Map();
+  const mindmapPointers = new Map();
+  let mindmapPinch = null;
   const MIN_SLIDE_ZOOM = 1;
   const MAX_SLIDE_ZOOM = 2.6;
   const SLIDE_WHEEL_ZOOM_STEP = 0.08;
+  const MIN_MINDMAP_ZOOM = 0.65;
+  const MAX_MINDMAP_ZOOM = 2.8;
+  const MINDMAP_WHEEL_ZOOM_STEP = 0.1;
+  const CHAT_BOTTOM_THRESHOLD = 72;
   const STATUS_MIN_VISIBLE_MS = 500;
   const LAST_NOTEBOOK_KEY = "cs101-last-notebook-id";
   const MATHJAX_CDN_URL = "https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js";
@@ -795,6 +805,10 @@
 
   function clampSlideZoom(value) {
     return Math.min(MAX_SLIDE_ZOOM, Math.max(MIN_SLIDE_ZOOM, value));
+  }
+
+  function clampMindmapZoom(value) {
+    return Math.min(MAX_MINDMAP_ZOOM, Math.max(MIN_MINDMAP_ZOOM, value));
   }
 
   function clampUnit(value) {
@@ -1731,7 +1745,7 @@
         button.textContent = citation.label || `P${citation.pageNumber}`;
         button.dataset.tooltip = `跳转到第 ${citation.pageNumber} 页`;
         button.addEventListener("click", () => {
-          void navigateToCitation(state.currentCourseId, citation.pageNumber);
+          void navigateToCitation(citation.courseId || state.currentCourseId, citation.pageNumber);
         });
         citations.append(button);
       });
@@ -1879,7 +1893,7 @@
         button.textContent = citation.label || `P${citation.pageNumber}`;
         button.dataset.tooltip = `跳转到第 ${citation.pageNumber} 页`;
         button.addEventListener("click", () => {
-          void navigateToCitation(state.currentCourseId, citation.pageNumber);
+          void navigateToCitation(citation.courseId || state.currentCourseId, citation.pageNumber);
         });
         citations.append(button);
       });
@@ -1960,6 +1974,34 @@
     });
     depthLabel.append(depthSelect);
 
+    const scopeToggle = document.createElement("div");
+    scopeToggle.className = "mindmap-scope-toggle";
+    scopeToggle.setAttribute("role", "group");
+    scopeToggle.setAttribute("aria-label", "思维导图范围");
+    [
+      ["current", "当前课件"],
+      ["all", "全体课件"],
+    ].forEach(([scope, label]) => {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.textContent = label;
+      button.classList.toggle("active", state.mindmap.scope === scope);
+      button.disabled = state.mindmap.isGenerating;
+      button.addEventListener("click", () => {
+        if (state.mindmap.scope === scope) {
+          return;
+        }
+
+        state.mindmap.scope = scope;
+        state.mindmap.root = null;
+        state.mindmap.collapsed = {};
+        state.mindmap.error = "";
+        state.mindmap.zoom = 1;
+        renderMindmapMenu();
+      });
+      scopeToggle.append(button);
+    });
+
     const focusInput = document.createElement("input");
     focusInput.type = "text";
     focusInput.value = state.mindmap.focus;
@@ -1978,7 +2020,77 @@
       void handleGenerateMindmapClick();
     });
 
-    controls.append(depthLabel, focusInput, generateButton);
+    const zoomOutButton = document.createElement("button");
+    zoomOutButton.type = "button";
+    zoomOutButton.className = "mindmap-tool-button";
+    zoomOutButton.textContent = "-";
+    zoomOutButton.disabled = !state.mindmap.root;
+    zoomOutButton.addEventListener("click", () => {
+      const canvas = elements.mindmapMenu.querySelector(".mindmap-canvas");
+      if (canvas) {
+        zoomMindmap(state.mindmap.zoom - MINDMAP_WHEEL_ZOOM_STEP, canvas);
+      }
+    });
+
+    const zoomResetButton = document.createElement("button");
+    zoomResetButton.type = "button";
+    zoomResetButton.className = "mindmap-tool-button mindmap-zoom-reset";
+    zoomResetButton.textContent = `${Math.round(state.mindmap.zoom * 100)}%`;
+    zoomResetButton.disabled = !state.mindmap.root;
+    zoomResetButton.addEventListener("click", () => {
+      const canvas = elements.mindmapMenu.querySelector(".mindmap-canvas");
+      if (canvas) {
+        zoomMindmap(1, canvas);
+      }
+    });
+
+    const zoomInButton = document.createElement("button");
+    zoomInButton.type = "button";
+    zoomInButton.className = "mindmap-tool-button";
+    zoomInButton.textContent = "+";
+    zoomInButton.disabled = !state.mindmap.root;
+    zoomInButton.addEventListener("click", () => {
+      const canvas = elements.mindmapMenu.querySelector(".mindmap-canvas");
+      if (canvas) {
+        zoomMindmap(state.mindmap.zoom + MINDMAP_WHEEL_ZOOM_STEP, canvas);
+      }
+    });
+
+    const exportPngButton = document.createElement("button");
+    exportPngButton.type = "button";
+    exportPngButton.className = "mindmap-tool-button";
+    exportPngButton.textContent = "PNG";
+    exportPngButton.disabled = !state.mindmap.root;
+    exportPngButton.addEventListener("click", () => {
+      void exportMindmap("png");
+    });
+
+    const exportPdfButton = document.createElement("button");
+    exportPdfButton.type = "button";
+    exportPdfButton.className = "mindmap-tool-button";
+    exportPdfButton.textContent = "PDF";
+    exportPdfButton.disabled = !state.mindmap.root;
+    exportPdfButton.addEventListener("click", () => {
+      void exportMindmap("pdf");
+    });
+
+    const toolGroup = document.createElement("div");
+    toolGroup.className = "mindmap-tool-group";
+    toolGroup.append(
+      zoomOutButton,
+      zoomResetButton,
+      zoomInButton,
+      exportPngButton,
+      exportPdfButton,
+    );
+
+    controls.append(
+      depthLabel,
+      scopeToggle,
+      focusInput,
+      generateButton,
+      toolGroup,
+    );
     dialog.append(controls);
 
     if (state.mindmap.error) {
@@ -2006,6 +2118,11 @@
       const canvas = document.createElement("div");
       canvas.className = "mindmap-canvas";
       canvas.textContent = state.mindmap.d3Status || "正在准备 D3 画布...";
+      canvas.addEventListener("wheel", handleMindmapWheel, { passive: false });
+      canvas.addEventListener("pointerdown", handleMindmapPointerDown);
+      canvas.addEventListener("pointermove", handleMindmapPointerMove);
+      canvas.addEventListener("pointerup", handleMindmapPointerEnd);
+      canvas.addEventListener("pointercancel", handleMindmapPointerEnd);
       dialog.append(canvas);
       void renderMindmapCanvas(canvas);
     }
@@ -2078,6 +2195,10 @@
       .append("svg")
       .attr("class", "mindmap-svg")
       .attr("viewBox", `${offsetX} ${offsetY} ${viewWidth} ${viewHeight}`)
+      .attr("data-base-width", viewWidth)
+      .attr("data-base-height", viewHeight)
+      .attr("width", viewWidth * state.mindmap.zoom)
+      .attr("height", viewHeight * state.mindmap.zoom)
       .attr("role", "img")
       .attr("aria-label", "课程思维导图");
 
@@ -2089,8 +2210,12 @@
       .join("path")
       .attr(
         "d",
-        (link) =>
-          `M${link.source.y + 58},${link.source.x}C${link.source.y + 115},${link.source.x} ${link.target.y - 95},${link.target.x} ${link.target.y - 36},${link.target.x}`,
+        (link) => {
+          const sourceX = link.source.y + mindmapNodeWidth(link.source.data.title) + 34;
+          const targetX = link.target.y - 8;
+          const midX = sourceX + (targetX - sourceX) / 2;
+          return `M${sourceX},${link.source.x}H${midX}V${link.target.x}H${targetX}`;
+        },
       );
 
     const node = svg
@@ -2106,7 +2231,10 @@
       .filter((item) => item.data._hasChildren)
       .append("g")
       .attr("class", "mindmap-toggle")
-      .attr("transform", "translate(-32,0)")
+      .attr(
+        "transform",
+        (item) => `translate(${mindmapNodeWidth(item.data.title) + 20},0)`,
+      )
       .attr("tabindex", 0)
       .attr("role", "button")
       .attr("aria-label", "展开或折叠知识点")
@@ -2124,9 +2252,12 @@
 
     toggle.append("circle").attr("r", 11);
     toggle
-      .append("text")
-      .attr("dy", "0.35em")
-      .text((item) => (state.mindmap.collapsed[item.data.id] ? "›" : "⌄"));
+      .append("path")
+      .attr("d", (item) =>
+        state.mindmap.collapsed[item.data.id]
+          ? "M -4.5 -6 L 5 0 L -4.5 6 Z"
+          : "M -6 -4.5 L 0 5 L 6 -4.5 Z",
+      );
 
     const titleGroup = node
       .append("g")
@@ -2158,6 +2289,313 @@
       .attr("x", 10)
       .attr("dy", "0.35em")
       .text((item) => truncateMindmapTitle(item.data.title));
+  }
+
+  function handleMindmapWheel(event) {
+    if (!event.ctrlKey) {
+      return;
+    }
+
+    event.preventDefault();
+    event.stopPropagation();
+
+    const direction = event.deltaY < 0 ? 1 : -1;
+    zoomMindmap(
+      state.mindmap.zoom + direction * MINDMAP_WHEEL_ZOOM_STEP,
+      event.currentTarget,
+      {
+        clientX: event.clientX,
+        clientY: event.clientY,
+      },
+    );
+  }
+
+  function handleMindmapPointerDown(event) {
+    if (event.pointerType !== "touch") {
+      return;
+    }
+
+    mindmapPointers.set(event.pointerId, event);
+    event.currentTarget.setPointerCapture(event.pointerId);
+
+    if (mindmapPointers.size === 2) {
+      const [pointA, pointB] = [...mindmapPointers.values()];
+      mindmapPinch = {
+        distance: getDistance(pointA, pointB),
+        zoom: state.mindmap.zoom,
+      };
+      event.currentTarget.classList.add("is-pinching");
+    }
+  }
+
+  function handleMindmapPointerMove(event) {
+    if (!mindmapPointers.has(event.pointerId)) {
+      return;
+    }
+
+    mindmapPointers.set(event.pointerId, event);
+
+    if (mindmapPointers.size !== 2 || !mindmapPinch) {
+      return;
+    }
+
+    event.preventDefault();
+
+    const [pointA, pointB] = [...mindmapPointers.values()];
+    const distance = getDistance(pointA, pointB);
+
+    if (!mindmapPinch.distance) {
+      return;
+    }
+
+    zoomMindmap(
+      mindmapPinch.zoom * (distance / mindmapPinch.distance),
+      event.currentTarget,
+      getMidpoint(pointA, pointB),
+    );
+  }
+
+  function handleMindmapPointerEnd(event) {
+    mindmapPointers.delete(event.pointerId);
+
+    if (mindmapPointers.size < 2) {
+      mindmapPinch = null;
+      event.currentTarget.classList.remove("is-pinching");
+    }
+  }
+
+  function zoomMindmap(nextZoom, container, anchorPoint) {
+    if (!container) {
+      return;
+    }
+
+    const previousZoom = state.mindmap.zoom;
+    const zoom = clampMindmapZoom(nextZoom);
+    if (Math.abs(zoom - previousZoom) < 0.001) {
+      return;
+    }
+
+    const viewportRect = container.getBoundingClientRect();
+    const anchor = anchorPoint || {
+      clientX: viewportRect.left + viewportRect.width / 2,
+      clientY: viewportRect.top + viewportRect.height / 2,
+    };
+    const anchorX = anchor.clientX - viewportRect.left;
+    const anchorY = anchor.clientY - viewportRect.top;
+    const contentX = container.scrollLeft + anchorX;
+    const contentY = container.scrollTop + anchorY;
+    const anchorRatioX = container.scrollWidth
+      ? clampUnit(contentX / container.scrollWidth)
+      : 0.5;
+    const anchorRatioY = container.scrollHeight
+      ? clampUnit(contentY / container.scrollHeight)
+      : 0.5;
+    const previousScrollBehavior = container.style.scrollBehavior;
+
+    container.style.scrollBehavior = "auto";
+    state.mindmap.zoom = zoom;
+    applyMindmapZoom(container);
+    container.scrollLeft = anchorRatioX * container.scrollWidth - anchorX;
+    container.scrollTop = anchorRatioY * container.scrollHeight - anchorY;
+    updateMindmapZoomControls();
+
+    window.requestAnimationFrame(() => {
+      container.style.scrollBehavior = previousScrollBehavior;
+    });
+  }
+
+  function applyMindmapZoom(container) {
+    const svg = container.querySelector(".mindmap-svg");
+    if (!svg) {
+      return;
+    }
+
+    const baseWidth = Number(svg.dataset.baseWidth) || 560;
+    const baseHeight = Number(svg.dataset.baseHeight) || 320;
+    svg.setAttribute("width", String(baseWidth * state.mindmap.zoom));
+    svg.setAttribute("height", String(baseHeight * state.mindmap.zoom));
+  }
+
+  function updateMindmapZoomControls() {
+    const resetButton = elements.mindmapMenu.querySelector(".mindmap-zoom-reset");
+    if (resetButton) {
+      resetButton.textContent = `${Math.round(state.mindmap.zoom * 100)}%`;
+    }
+  }
+
+  async function exportMindmap(format) {
+    const svg = elements.mindmapMenu.querySelector(".mindmap-svg");
+    if (!svg) {
+      return;
+    }
+
+    try {
+      const raster = await rasterizeMindmapSvg(svg, 2);
+      const filenameBase = mindmapExportFilename();
+
+      if (format === "pdf") {
+        const pdfBlob = await mindmapPdfBlob(raster.canvas);
+        downloadBlob(pdfBlob, `${filenameBase}.pdf`);
+        return;
+      }
+
+      raster.canvas.toBlob((blob) => {
+        if (blob) {
+          downloadBlob(blob, `${filenameBase}.png`);
+        }
+      }, "image/png");
+    } catch (error) {
+      console.error(error);
+      state.mindmap.error = error.message || "导出失败，请稍后再试。";
+      renderMindmapMenu();
+    }
+  }
+
+  function mindmapExportFilename() {
+    const title = state.currentDeck ? state.currentDeck.title : "mindmap";
+    return `${String(title || "mindmap").replace(/[\\/:*?"<>|]+/g, "-")}-mindmap`;
+  }
+
+  function cloneMindmapSvgForExport(svg) {
+    const clone = svg.cloneNode(true);
+    clone.setAttribute("xmlns", "http://www.w3.org/2000/svg");
+    clone.setAttribute("width", svg.getAttribute("width") || "900");
+    clone.setAttribute("height", svg.getAttribute("height") || "560");
+
+    const style = document.createElementNS("http://www.w3.org/2000/svg", "style");
+    style.textContent = `
+      .mindmap-links path { fill: none; stroke: #cbd5e1; stroke-width: 1.8; stroke-linecap: square; stroke-linejoin: miter; }
+      .mindmap-title-hit rect { fill: #fff; stroke: #bfdbfe; stroke-width: 1.2; }
+      .mindmap-title-hit text { fill: #18181b; font: 800 12px sans-serif; }
+      .mindmap-toggle circle { fill: #f8fafc; stroke: #cbd5e1; stroke-width: 1.2; }
+      .mindmap-toggle path { fill: #2563eb; }
+    `;
+    clone.insertBefore(style, clone.firstChild);
+    return clone;
+  }
+
+  function rasterizeMindmapSvg(svg, scale = 1) {
+    return new Promise((resolve, reject) => {
+      const clone = cloneMindmapSvgForExport(svg);
+      const width = Math.max(1, Math.ceil(Number(clone.getAttribute("width")) || 900));
+      const height = Math.max(1, Math.ceil(Number(clone.getAttribute("height")) || 560));
+      const source = new XMLSerializer().serializeToString(clone);
+      const blob = new Blob([source], { type: "image/svg+xml;charset=utf-8" });
+      const url = URL.createObjectURL(blob);
+      const image = new Image();
+
+      image.onload = () => {
+        const canvas = document.createElement("canvas");
+        canvas.width = Math.ceil(width * scale);
+        canvas.height = Math.ceil(height * scale);
+        const context = canvas.getContext("2d");
+        context.fillStyle = "#ffffff";
+        context.fillRect(0, 0, canvas.width, canvas.height);
+        context.drawImage(image, 0, 0, canvas.width, canvas.height);
+        URL.revokeObjectURL(url);
+        resolve({ canvas, width: canvas.width, height: canvas.height });
+      };
+      image.onerror = () => {
+        URL.revokeObjectURL(url);
+        reject(new Error("无法渲染思维导图。"));
+      };
+      image.src = url;
+    });
+  }
+
+  async function mindmapPdfBlob(canvas) {
+    const jpegDataUrl = canvas.toDataURL("image/jpeg", 0.92);
+    const imageBytes = dataUrlToBytes(jpegDataUrl);
+    const pageWidth = 842;
+    const pageHeight = 595;
+    const margin = 32;
+    const maxWidth = pageWidth - margin * 2;
+    const maxHeight = pageHeight - margin * 2;
+    const imageRatio = canvas.width / canvas.height;
+    let drawWidth = maxWidth;
+    let drawHeight = drawWidth / imageRatio;
+
+    if (drawHeight > maxHeight) {
+      drawHeight = maxHeight;
+      drawWidth = drawHeight * imageRatio;
+    }
+
+    const drawX = (pageWidth - drawWidth) / 2;
+    const drawY = (pageHeight - drawHeight) / 2;
+    const content = `q\n${drawWidth.toFixed(2)} 0 0 ${drawHeight.toFixed(2)} ${drawX.toFixed(2)} ${drawY.toFixed(2)} cm\n/Im1 Do\nQ\n`;
+
+    return buildPdf([
+      "<< /Type /Catalog /Pages 2 0 R >>",
+      "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+      `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ${pageWidth} ${pageHeight}] /Resources << /XObject << /Im1 4 0 R >> >> /Contents 5 0 R >>`,
+      {
+        header: `<< /Type /XObject /Subtype /Image /Width ${canvas.width} /Height ${canvas.height} /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /DCTDecode /Length ${imageBytes.length} >>`,
+        stream: imageBytes,
+      },
+      {
+        header: `<< /Length ${new TextEncoder().encode(content).length} >>`,
+        stream: new TextEncoder().encode(content),
+      },
+    ]);
+  }
+
+  function dataUrlToBytes(dataUrl) {
+    const base64 = dataUrl.split(",")[1] || "";
+    const binary = atob(base64);
+    const bytes = new Uint8Array(binary.length);
+    for (let index = 0; index < binary.length; index += 1) {
+      bytes[index] = binary.charCodeAt(index);
+    }
+    return bytes;
+  }
+
+  function buildPdf(objects) {
+    const encoder = new TextEncoder();
+    const chunks = [encoder.encode("%PDF-1.4\n")];
+    const offsets = [];
+    let length = chunks[0].length;
+
+    objects.forEach((object, index) => {
+      offsets.push(length);
+      const objectNumber = index + 1;
+      if (typeof object === "string") {
+        const chunk = encoder.encode(`${objectNumber} 0 obj\n${object}\nendobj\n`);
+        chunks.push(chunk);
+        length += chunk.length;
+        return;
+      }
+
+      const header = encoder.encode(`${objectNumber} 0 obj\n${object.header}\nstream\n`);
+      const footer = encoder.encode("\nendstream\nendobj\n");
+      chunks.push(header, object.stream, footer);
+      length += header.length + object.stream.length + footer.length;
+    });
+
+    const xrefOffset = length;
+    const xrefLines = [
+      "xref",
+      `0 ${objects.length + 1}`,
+      "0000000000 65535 f ",
+      ...offsets.map((offset) => `${String(offset).padStart(10, "0")} 00000 n `),
+      "trailer",
+      `<< /Size ${objects.length + 1} /Root 1 0 R >>`,
+      "startxref",
+      String(xrefOffset),
+      "%%EOF",
+    ];
+    chunks.push(encoder.encode(`${xrefLines.join("\n")}\n`));
+    return new Blob(chunks, { type: "application/pdf" });
+  }
+
+  function downloadBlob(blob, filename) {
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = filename;
+    document.body.append(link);
+    link.click();
+    link.remove();
+    window.setTimeout(() => URL.revokeObjectURL(url), 1000);
   }
 
   function buildVisibleMindmapNode(node) {
@@ -2336,6 +2774,12 @@
   function renderMessages(options = {}) {
     const shouldTypesetMath = options.typesetMath !== false;
     const shouldCompileStreaming = options.compileStreaming === true;
+    const shouldStickToBottom =
+      options.stickToBottom !== undefined
+        ? Boolean(options.stickToBottom)
+        : shouldAutoScrollChat();
+    const previousScrollTop = elements.messageList.scrollTop;
+    const previousScrollHeight = elements.messageList.scrollHeight;
     streamingViews.clear();
     elements.messageList.innerHTML = "";
 
@@ -2392,7 +2836,12 @@
       elements.messageList.append(status);
     }
 
-    elements.messageList.scrollTop = elements.messageList.scrollHeight;
+    if (shouldStickToBottom) {
+      scrollChatToBottom();
+    } else {
+      const heightDelta = elements.messageList.scrollHeight - previousScrollHeight;
+      elements.messageList.scrollTop = Math.max(0, previousScrollTop + heightDelta);
+    }
     renderHistoryMenu();
     if (shouldTypesetMath && !state.isSending && !state.isStartingConversation) {
       queueMathTypeset();
@@ -2515,6 +2964,42 @@
     );
   }
 
+  function isChatNearBottom() {
+    const distance =
+      elements.messageList.scrollHeight -
+      elements.messageList.scrollTop -
+      elements.messageList.clientHeight;
+    return distance <= CHAT_BOTTOM_THRESHOLD;
+  }
+
+  function shouldAutoScrollChat() {
+    return state.chatStickToBottom && !state.userPausedChatAutoScroll;
+  }
+
+  function scrollChatToBottom() {
+    elements.messageList.scrollTop = elements.messageList.scrollHeight;
+    state.chatStickToBottom = true;
+    state.userPausedChatAutoScroll = false;
+  }
+
+  function handleMessageListScroll() {
+    const nearBottom = isChatNearBottom();
+    state.chatStickToBottom = nearBottom;
+    if (nearBottom) {
+      state.userPausedChatAutoScroll = false;
+    }
+  }
+
+  function handleMessageListWheel(event) {
+    if (event.deltaY < 0) {
+      state.userPausedChatAutoScroll = true;
+      state.chatStickToBottom = false;
+      return;
+    }
+
+    window.requestAnimationFrame(handleMessageListScroll);
+  }
+
   function scheduleStreamingRender(message) {
     if (message) {
       renderStreamingMessage(message);
@@ -2529,6 +3014,7 @@
 
   function renderStreamingMessage(message, options = {}) {
     clearTransientChatStatus();
+    const shouldStickToBottom = shouldAutoScrollChat();
     const view = ensureStreamingView(message);
     const content = String(message.content || "");
     const stableEnd = options.flush
@@ -2551,7 +3037,9 @@
 
     const tailText = content.slice(view.committedLength);
     view.tail.textContent = tailText;
-    elements.messageList.scrollTop = elements.messageList.scrollHeight;
+    if (shouldStickToBottom) {
+      scrollChatToBottom();
+    }
   }
 
   function clearTransientChatStatus() {
@@ -2920,6 +3408,8 @@
     let assistantMessage = null;
 
     state.isStartingConversation = true;
+    state.chatStickToBottom = true;
+    state.userPausedChatAutoScroll = false;
     state.starterStatus = "正在生成总结...";
     state.activeConversationId = null;
     state.messages = [];
@@ -3189,6 +3679,7 @@
     clearNoteAutocomplete({ abortRequest: true, resetFingerprint: true });
     state.currentCourseId = event.target.value;
     state.activeSlidePage = 1;
+    state.userPausedChatAutoScroll = false;
     state.activeConversationId = null;
     state.isHistoryOpen = false;
     state.quiz.questions = [];
@@ -3266,6 +3757,8 @@
 
     state.messages.push(userMessage);
     state.isSending = true;
+    state.chatStickToBottom = true;
+    state.userPausedChatAutoScroll = false;
     resetChatProgress();
     state.pendingMessageId = userMessage.id;
     elements.chatInput.value = "";
@@ -3606,6 +4099,7 @@
     try {
       const data = await generateCourseHighlights(state.currentCourseId, {
         count: state.highlights.count,
+        scope: "current",
         currentNote: state.noteContent,
       });
       state.highlights.items = Array.isArray(data.highlights) ? data.highlights : [];
@@ -3635,6 +4129,7 @@
     try {
       const data = await generateCourseMindmap(state.currentCourseId, {
         depth: state.mindmap.depth,
+        scope: state.mindmap.scope,
         focus: state.mindmap.focus,
         currentNote: state.noteContent,
       });
@@ -4514,6 +5009,12 @@
     elements.chatForm.addEventListener("submit", handleChatSubmit);
     elements.chatInput.addEventListener("input", handleChatInput);
     elements.chatInput.addEventListener("keydown", handleChatKeydown);
+    elements.messageList.addEventListener("scroll", handleMessageListScroll, {
+      passive: true,
+    });
+    elements.messageList.addEventListener("wheel", handleMessageListWheel, {
+      passive: true,
+    });
     elements.appSettingsButton.addEventListener("click", handleSettingsButtonClick);
     elements.appSettingsClose.addEventListener("click", closeSettingsPanel);
     elements.settingsSaveButton.addEventListener("click", handleSettingsSaveClick);

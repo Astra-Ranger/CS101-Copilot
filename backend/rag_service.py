@@ -21,6 +21,7 @@ from docker_1 import (
     SlideCatalogError,
     SlideNotFound,
     build_course_deck,
+    build_course_index,
     get_slide_page_path,
 )
 
@@ -134,11 +135,13 @@ class RawGeneratedQuestion(BaseModel):
 
 class HighlightGenerateRequest(BaseModel):
     count: int = Field(default=8, ge=1, le=10)
+    scope: Literal["current"] = "current"
     currentNote: str = Field(default="")
 
 
 class MindmapGenerateRequest(BaseModel):
     depth: int = Field(default=3, ge=2, le=4)
+    scope: Literal["current", "all"] = "current"
     focus: str = Field(default="")
     currentNote: str = Field(default="")
 
@@ -323,7 +326,7 @@ class CourseRAGService:
             raise ValueError("Highlight generation request is invalid.") from exc
 
         deck = await asyncio.to_thread(build_course_deck, course_id)
-        contexts = await asyncio.to_thread(self._quiz_contexts_from_chroma, deck)
+        contexts = await asyncio.to_thread(self._current_course_generation_contexts, deck)
         if not contexts:
             raise HighlightContextUnavailable("当前课程没有可用文本资料，无法基于课件划重点。")
 
@@ -358,7 +361,11 @@ class CourseRAGService:
             raise ValueError("Mind map generation request is invalid.") from exc
 
         deck = await asyncio.to_thread(build_course_deck, course_id)
-        contexts = await asyncio.to_thread(self._quiz_contexts_from_chroma, deck)
+        contexts = await asyncio.to_thread(
+            self._mindmap_generation_contexts,
+            deck,
+            mindmap_request.scope,
+        )
         if not contexts:
             raise MindmapContextUnavailable("当前课程没有可用文本资料，无法生成思维导图。")
 
@@ -382,6 +389,7 @@ class CourseRAGService:
         return {
             "courseId": course_id,
             "resolvedCourseId": str(deck.get("resolvedCourseId") or deck.get("courseId") or course_id),
+            "scope": mindmap_request.scope,
             "generatedAt": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
             "mindmap": mindmap,
         }
@@ -878,6 +886,86 @@ class CourseRAGService:
 
         return self._quiz_contexts_from_candidates(candidates)
 
+    def _current_course_generation_contexts(self, deck: dict[str, Any]) -> list[dict[str, Any]]:
+        return self._add_course_metadata_to_contexts(
+            self._quiz_contexts_from_chroma(deck),
+            deck,
+        )
+
+    def _mindmap_generation_contexts(
+        self,
+        deck: dict[str, Any],
+        scope: Literal["current", "all"],
+    ) -> list[dict[str, Any]]:
+        if scope != "all":
+            return self._current_course_generation_contexts(deck)
+
+        current_course_id = str(deck.get("resolvedCourseId") or deck.get("courseId") or "")
+        try:
+            index = build_course_index()
+        except SlideCatalogError as exc:
+            logger.warning("Failed to build course index for all-course mind map: %s", exc)
+            return self._current_course_generation_contexts(deck)
+
+        courses = list(index.get("courses") or [])
+        courses.sort(key=lambda item: 0 if str(item.get("id") or "") == current_course_id else 1)
+        per_course_limit = max(2, min(4, 30 // max(1, len(courses))))
+        contexts: list[dict[str, Any]] = []
+        total_chars = 0
+
+        for course in courses:
+            course_id = str(course.get("id") or "")
+            if not course_id:
+                continue
+
+            try:
+                course_deck = build_course_deck(course_id)
+            except SlideCatalogError as exc:
+                logger.warning("Skipping missing course for all-course mind map: %s", exc)
+                continue
+
+            course_contexts = self._add_course_metadata_to_contexts(
+                self._quiz_contexts_from_chroma(course_deck),
+                course_deck,
+                include_course_in_label=True,
+            )
+
+            for item in course_contexts[:per_course_limit]:
+                content = str(item.get("content") or "")
+                if len(contexts) >= 30 or total_chars + len(content) > 20_000:
+                    break
+
+                next_item = dict(item)
+                next_item["sourceId"] = f"S{len(contexts) + 1}"
+                contexts.append(next_item)
+                total_chars += len(content)
+
+            if len(contexts) >= 30 or total_chars >= 20_000:
+                break
+
+        return contexts
+
+    def _add_course_metadata_to_contexts(
+        self,
+        contexts: list[dict[str, Any]],
+        deck: dict[str, Any],
+        include_course_in_label: bool = False,
+    ) -> list[dict[str, Any]]:
+        course_id = str(deck.get("resolvedCourseId") or deck.get("courseId") or "")
+        course_title = str(deck.get("title") or course_id or "")
+        annotated: list[dict[str, Any]] = []
+
+        for item in contexts:
+            next_item = dict(item)
+            next_item["courseId"] = course_id
+            next_item["courseTitle"] = course_title
+            if include_course_in_label:
+                page_label = str(next_item.get("label") or f"P{next_item.get('pageNumber')}")
+                next_item["label"] = f"{course_title} {page_label}"[:80]
+            annotated.append(next_item)
+
+        return annotated
+
     def _quiz_context_candidates(self, documents: list[Any], metadatas: list[Any]) -> list[dict[str, Any]]:
         candidates: list[dict[str, Any]] = []
         seen: set[tuple[int, str]] = set()
@@ -975,7 +1063,9 @@ class CourseRAGService:
         type_text = ", ".join(quiz_request.types)
         context_text = "\n\n".join(
             (
-                f"[{item['sourceId']}] page={item['pageNumber']} label={item['label']}"
+                f"[{item['sourceId']}]"
+                f"{' course=' + item['courseTitle'] if item.get('courseTitle') else ''}"
+                f" page={item['pageNumber']} label={item['label']}"
                 f"{' heading=' + item['heading'] if item.get('heading') else ''}\n"
                 f"{item['content']}"
             )
@@ -1004,7 +1094,9 @@ class CourseRAGService:
         course_name = str(deck.get("title") or deck.get("courseId") or "CS101")
         context_text = "\n\n".join(
             (
-                f"[{item['sourceId']}] page={item['pageNumber']} label={item['label']}"
+                f"[{item['sourceId']}]"
+                f"{' course=' + item['courseTitle'] if item.get('courseTitle') else ''}"
+                f" page={item['pageNumber']} label={item['label']}"
                 f"{' heading=' + item['heading'] if item.get('heading') else ''}\n"
                 f"{item['content']}"
             )
@@ -1030,9 +1122,13 @@ class CourseRAGService:
         contexts: list[dict[str, Any]],
     ) -> list[dict[str, Any]]:
         course_name = str(deck.get("title") or deck.get("courseId") or "CS101")
+        if mindmap_request.scope == "all":
+            course_name = "CS101 全体课件"
         context_text = "\n\n".join(
             (
-                f"[{item['sourceId']}] page={item['pageNumber']} label={item['label']}"
+                f"[{item['sourceId']}]"
+                f"{' course=' + item['courseTitle'] if item.get('courseTitle') else ''}"
+                f" page={item['pageNumber']} label={item['label']}"
                 f"{' heading=' + item['heading'] if item.get('heading') else ''}\n"
                 f"{item['content']}"
             )
@@ -1093,18 +1189,21 @@ class CourseRAGService:
                 raise QuizGenerationError("Generated question does not cite valid course context.")
 
             citations = []
-            seen_pages: set[int] = set()
+            seen_pages: set[tuple[str, int]] = set()
             for source_id in source_ids[:2]:
                 source = source_map[source_id]
+                citation_course_id = str(source.get("courseId") or course_id)
                 page = int(source["pageNumber"])
-                if page in seen_pages:
+                seen_key = (citation_course_id, page)
+                if seen_key in seen_pages:
                     continue
-                seen_pages.add(page)
+                seen_pages.add(seen_key)
                 citations.append(
                     {
+                        "courseId": citation_course_id,
                         "pageNumber": page,
                         "label": source["label"],
-                        "imageUrl": self._slide_image_url(course_id, page),
+                        "imageUrl": self._slide_image_url(citation_course_id, page),
                     }
                 )
 
@@ -1209,20 +1308,23 @@ class CourseRAGService:
                 return []
 
             citations = []
-            seen_pages: set[int] = set()
+            seen_pages: set[tuple[str, int]] = set()
             for source_id in source_ids:
                 source = source_map.get(str(source_id))
                 if not source:
                     continue
+                citation_course_id = str(source.get("courseId") or course_id)
                 page = int(source["pageNumber"])
-                if page in seen_pages:
+                seen_key = (citation_course_id, page)
+                if seen_key in seen_pages:
                     continue
-                seen_pages.add(page)
+                seen_pages.add(seen_key)
                 citations.append(
                     {
+                        "courseId": citation_course_id,
                         "pageNumber": page,
                         "label": source["label"],
-                        "imageUrl": self._slide_image_url(course_id, page),
+                        "imageUrl": self._slide_image_url(citation_course_id, page),
                     }
                 )
                 if len(citations) >= 2:
