@@ -66,11 +66,11 @@ course_slide/              # 课件页图片
 
 下载模型
 
-、、、bash
+```bash
 git clone https://github.com/Astra-Ranger/CS101-Copilot.git
 # 建议 git clone https://git.cs101.gbu.edu.cn/Deng/cs101-copliot.git 下载校内版本
 # 部分功能 github 版本需配置 api 才能使用
-、、、
+```
 
 先安装后端依赖：
 
@@ -111,15 +111,6 @@ FLASK_HOST=127.0.0.1 FLASK_PORT=5001 .venv/bin/python backend/main.py
 - 自动补全 API：用于替换笔记自动补全 provider。
 - 回答模式：可在“友好”和“严肃”之间切换，只影响最终回答语气。
 
-用户运行时设置会保存到：
-
-```text
-backend/user_settings.json
-```
-
-<<<<<<< HEAD
-该文件只用于本地单用户配置，不应提交到 Git。
-=======
 ## 数据文件
 
 以下文件是本地运行产生的用户数据：
