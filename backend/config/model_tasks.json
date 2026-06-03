@@ -16,6 +16,18 @@
     "fallback": "siliconflow_qwen"
   },
   "note_autocomplete": "siliconflow_glm",
+  "question_generation": {
+    "primary": "qwen",
+    "fallback": "siliconflow_qwen"
+  },
+  "highlight_generation": {
+    "primary": "qwen",
+    "fallback": "siliconflow_qwen"
+  },
+  "mindmap_generation": {
+    "primary": "qwen",
+    "fallback": "siliconflow_qwen"
+  },
   "final_answer": {
     "primary": "qwen",
     "fallback": "siliconflow_qwen"

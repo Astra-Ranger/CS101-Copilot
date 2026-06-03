@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>CS101_Copilot</title>
-    <link rel="stylesheet" href="/styles.css?v=20260528-logo-small" />
+    <link rel="stylesheet" href="/styles.css?v=20260601-scope-tools" />
     <script>
       window.MathJax = {
         tex: {
@@ -140,6 +140,22 @@
             <div class="settings-actions">
               <span id="settings-save-state"></span>
               <button id="settings-save-button" type="button">保存</button>
+            </div>
+            <div class="settings-project-links">
+              <span>
+                Completed by
+                <a href="https://astra-ranger.github.io/" target="_blank" rel="noreferrer">Sirui Liang</a>,
+                <a href="https://bohan.bohandeng102647.workers.dev/" target="_blank" rel="noreferrer">Bohan Deng</a>,
+                and Weinan Guan.
+              </span>
+              <a
+                class="settings-repo-link"
+                href="https://github.com/Astra-Ranger/CS101-Copilot"
+                target="_blank"
+                rel="noreferrer"
+              >
+                Github: Astra-Ranger/CS101-Copilot
+              </a>
             </div>
             <p class="settings-acknowledgement">感谢徐志伟老师与李晓明老师为计算机科学教育做出的贡献，赋予了本项目最核心的价值。</p>
           </div>
@@ -314,11 +330,58 @@
                   <path d="M12 7v5l3 2"></path>
                 </svg>
               </button>
+              <button
+                id="quiz-button"
+                class="chat-icon-button"
+                type="button"
+                aria-label="生成练习题"
+                data-tooltip="生成练习题"
+              >
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <rect x="4" y="3" width="16" height="18" rx="2"></rect>
+                  <path d="M8 7h8"></path>
+                  <path d="M8 11h8"></path>
+                  <path d="M8 15h5"></path>
+                </svg>
+              </button>
+              <button
+                id="highlight-button"
+                class="chat-icon-button"
+                type="button"
+                aria-label="划重点"
+                data-tooltip="划重点"
+              >
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="M4 19h16"></path>
+                  <path d="M7 15l8.5-8.5 2 2L9 17H7z"></path>
+                  <path d="M13.5 8.5l2 2"></path>
+                </svg>
+              </button>
+              <button
+                id="mindmap-button"
+                class="chat-icon-button"
+                type="button"
+                aria-label="思维导图"
+                data-tooltip="思维导图"
+              >
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <circle cx="12" cy="5" r="2"></circle>
+                  <circle cx="6" cy="17" r="2"></circle>
+                  <circle cx="18" cy="17" r="2"></circle>
+                  <path d="M12 7v4"></path>
+                  <path d="M12 11 6 15"></path>
+                  <path d="m12 11 6 4"></path>
+                </svg>
+              </button>
             </div>
           </header>
           <div class="chat-history-menu" id="chat-history-menu" hidden></div>
+          <div class="quiz-menu" id="quiz-menu" hidden></div>
+          <div class="highlight-menu" id="highlight-menu" hidden></div>
+          <div class="mindmap-menu" id="mindmap-menu" hidden></div>
           <div class="message-list" id="message-list" aria-live="polite"></div>
           <form class="chat-form" id="chat-form">
+            <div class="note-reference-list" id="note-reference-list"></div>
             <textarea
               id="chat-input"
               rows="1"
@@ -332,6 +395,17 @@
     </div>
 
     <script src="/slides-manifest.js"></script>
-    <script src="/app.js?v=20260524-notebooks"></script>
+    <script src="/js/state.js?v=20260603-modular"></script>
+    <script src="/js/api.js?v=20260603-modular"></script>
+    <script src="/js/course-slides.js?v=20260603-modular"></script>
+    <script src="/js/markdown.js?v=20260603-modular"></script>
+    <script src="/js/learning-tools.js?v=20260603-modular"></script>
+    <script src="/js/mindmap.js?v=20260603-modular"></script>
+    <script src="/js/chat-rendering.js?v=20260603-modular"></script>
+    <script src="/js/chat-flow.js?v=20260603-modular"></script>
+    <script src="/js/notebook-data.js?v=20260603-modular"></script>
+    <script src="/js/notebook-editor.js?v=20260603-modular"></script>
+    <script src="/js/notebook-autocomplete.js?v=20260603-modular"></script>
+    <script src="/js/notebook-toolbar.js?v=20260603-modular"></script>
   </body>
 </html>

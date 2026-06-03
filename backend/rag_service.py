@@ -7,19 +7,43 @@ import logging
 import os
 import re
 from pathlib import Path
+from datetime import datetime, timezone
 from typing import Any, AsyncIterator, Literal, Optional
 from urllib.parse import quote
 
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, ValidationError
 
 from backend.config_loader import load_json_config
 from backend.model_client import ChatModelClient, ModelRegistry
+from backend.rag_models import (
+    ChatMessage,
+    ChatMetadata,
+    ChatRequest,
+    Citation,
+    HighlightContextUnavailable,
+    HighlightGenerateRequest,
+    HighlightGenerationError,
+    MindmapContextUnavailable,
+    MindmapGenerateRequest,
+    MindmapGenerationError,
+    NoteAutocompleteRequest,
+    QuestionGenerateRequest,
+    QuizContextUnavailable,
+    QuizGenerationError,
+    RawGeneratedHighlight,
+    RawGeneratedQuestion,
+    RouterDecision,
+    SlideImageArgs,
+    SlideImageContext,
+    VectorSearchArgs,
+)
 from docker_1 import (
     CourseNotFound,
     InvalidSlidePage,
     SlideCatalogError,
     SlideNotFound,
     build_course_deck,
+    build_course_index,
     get_slide_page_path,
 )
 
@@ -37,73 +61,7 @@ COURSE_QUERY_RE = re.compile(
     r"递归|循环|布尔|逻辑|流水线|网络|协议|排序|NP|加法器)"
 )
 PAGE_START_RE = re.compile(r"\d+")
-
-
-class ChatMessage(BaseModel):
-    role: Literal["user", "assistant", "system"]
-    content: str
-    id: Optional[str] = None
-
-
-class ChatRequest(BaseModel):
-    courseId: str = Field(default="demo-course")
-    currentPage: int = Field(default=1, ge=1)
-    currentNote: str = Field(default="")
-    answerMode: Literal["friendly", "serious"] = "friendly"
-    messages: list[ChatMessage] = Field(default_factory=list)
-
-
-class RouterDecision(BaseModel):
-    intent: Literal["chat", "course_knowledge", "slide_visual"] = "chat"
-    needs_vector_search: bool = False
-    needs_slide_image: bool = False
-    course_filter: Optional[str] = None
-    target_page: Optional[int] = None
-    reason: str = ""
-
-
-class Citation(BaseModel):
-    page: int
-    courseName: str
-    courseId: str
-    label: Optional[str] = None
-    source: Optional[str] = None
-    section: Optional[str] = None
-    imageUrl: str
-
-
-class SlideImageContext(BaseModel):
-    page: int
-    courseName: str
-    imageUrl: str
-    dataUrl: str
-
-
-class ChatMetadata(BaseModel):
-    ragStatus: Literal["ok", "degraded"] = "ok"
-    citations: list[Citation] = Field(default_factory=list)
-    slideImage: Optional[Citation] = None
-    warnings: list[str] = Field(default_factory=list)
-
-
-class VectorSearchArgs(BaseModel):
-    query: str
-    course_filter: Optional[str] = None
-    k: int = Field(default=5, ge=1, le=8)
-
-
-class SlideImageArgs(BaseModel):
-    course_id: str
-    page: int = Field(ge=1)
-
-
-class NoteAutocompleteRequest(BaseModel):
-    courseId: str = Field(default="demo-course")
-    currentPage: int = Field(default=1, ge=1)
-    noteContent: str = Field(default="")
-    cursorBefore: str = Field(default="")
-    cursorAfter: str = Field(default="")
-    lastAiAnswer: str = Field(default="")
+PAGE_REFERENCE_RE = re.compile(r"(?:\b[Pp]\s*|第\s*)(\d{1,3})\s*(?:页)?")
 
 
 class CourseRAGService:
@@ -213,6 +171,116 @@ class CourseRAGService:
         )
         return {"suggestion": suggestion}
 
+    async def generate_questions(self, course_id: str, request_data: dict[str, Any]) -> dict[str, Any]:
+        try:
+            quiz_request = self._model_validate(QuestionGenerateRequest, request_data)
+        except ValidationError as exc:
+            raise ValueError("Question generation request is invalid.") from exc
+
+        deck = await asyncio.to_thread(build_course_deck, course_id)
+        contexts = await asyncio.to_thread(self._quiz_contexts_from_chroma, deck)
+        if not contexts:
+            raise QuizContextUnavailable("当前课程没有可用文本资料，无法基于课件生成题目。")
+
+        messages = self._build_question_generation_messages(deck, quiz_request, contexts)
+
+        try:
+            response = await self._complete_task("question_generation", messages)
+            content = self._extract_message_content(response)
+            data = json.loads(self._extract_json_object(content))
+            questions = self._normalize_generated_questions(
+                data,
+                quiz_request,
+                contexts,
+                str(deck.get("courseId") or course_id),
+            )
+        except QuizGenerationError:
+            raise
+        except Exception as exc:
+            raise QuizGenerationError("Question generation failed.") from exc
+
+        return {
+            "courseId": course_id,
+            "resolvedCourseId": str(deck.get("resolvedCourseId") or deck.get("courseId") or course_id),
+            "generatedAt": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+            "questions": questions,
+        }
+
+    async def generate_highlights(self, course_id: str, request_data: dict[str, Any]) -> dict[str, Any]:
+        try:
+            highlight_request = self._model_validate(HighlightGenerateRequest, request_data)
+        except ValidationError as exc:
+            raise ValueError("Highlight generation request is invalid.") from exc
+
+        deck = await asyncio.to_thread(build_course_deck, course_id)
+        contexts = await asyncio.to_thread(self._current_course_generation_contexts, deck)
+        if not contexts:
+            raise HighlightContextUnavailable("当前课程没有可用文本资料，无法基于课件划重点。")
+
+        messages = self._build_highlight_generation_messages(deck, highlight_request, contexts)
+
+        try:
+            response = await self._complete_task("highlight_generation", messages)
+            content = self._extract_message_content(response)
+            data = json.loads(self._extract_json_object(content))
+            highlights = self._normalize_generated_highlights(
+                data,
+                highlight_request,
+                contexts,
+                str(deck.get("courseId") or course_id),
+            )
+        except HighlightGenerationError:
+            raise
+        except Exception as exc:
+            raise HighlightGenerationError("Highlight generation failed.") from exc
+
+        return {
+            "courseId": course_id,
+            "resolvedCourseId": str(deck.get("resolvedCourseId") or deck.get("courseId") or course_id),
+            "generatedAt": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+            "highlights": highlights,
+        }
+
+    async def generate_mindmap(self, course_id: str, request_data: dict[str, Any]) -> dict[str, Any]:
+        try:
+            mindmap_request = self._model_validate(MindmapGenerateRequest, request_data)
+        except ValidationError as exc:
+            raise ValueError("Mind map generation request is invalid.") from exc
+
+        deck = await asyncio.to_thread(build_course_deck, course_id)
+        contexts = await asyncio.to_thread(
+            self._mindmap_generation_contexts,
+            deck,
+            mindmap_request.scope,
+        )
+        if not contexts:
+            raise MindmapContextUnavailable("当前课程没有可用文本资料，无法生成思维导图。")
+
+        messages = self._build_mindmap_generation_messages(deck, mindmap_request, contexts)
+
+        try:
+            response = await self._complete_task("mindmap_generation", messages)
+            content = self._extract_message_content(response)
+            data = json.loads(self._extract_json_object(content))
+            mindmap = self._normalize_generated_mindmap(
+                data,
+                mindmap_request,
+                contexts,
+                str(deck.get("courseId") or course_id),
+            )
+        except MindmapGenerationError:
+            raise
+        except Exception as exc:
+            raise MindmapGenerationError("Mind map generation failed.") from exc
+
+        return {
+            "courseId": course_id,
+            "resolvedCourseId": str(deck.get("resolvedCourseId") or deck.get("courseId") or course_id),
+            "scope": mindmap_request.scope,
+            "generatedAt": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+            "mindmap": mindmap,
+        }
+
     async def _course_starter_messages(self, course_id: str) -> tuple[list[dict[str, Any]], str]:
         deck = await asyncio.to_thread(build_course_deck, course_id)
         course_name = str(deck.get("title") or course_id)
@@ -275,6 +343,9 @@ class CourseRAGService:
         decision = await self._route_query(chat_request, latest_query)
         contexts: list[dict[str, Any]] = []
         slide_image: Optional[SlideImageContext] = None
+        referenced_pages = self._page_references_from_query(latest_query)
+        if decision.target_page:
+            referenced_pages = self._dedupe_ints([decision.target_page, *referenced_pages])
 
         if decision.needs_vector_search:
             yield {"type": "status", "label": "读取知识库"}
@@ -282,6 +353,7 @@ class CourseRAGService:
                 contexts = await self.vector_search(
                     VectorSearchArgs(
                         query=latest_query,
+                        course_id=chat_request.courseId,
                         course_filter=decision.course_filter,
                     )
                 )
@@ -290,6 +362,17 @@ class CourseRAGService:
                 metadata.ragStatus = "degraded"
                 metadata.warnings.append("知识库暂不可用，已转为普通问答。")
                 yield {"type": "status", "label": "知识库暂不可用，转为普通问答"}
+
+        if referenced_pages:
+            try:
+                page_contexts = await asyncio.to_thread(
+                    self._page_contexts_from_chroma,
+                    chat_request.courseId,
+                    referenced_pages,
+                )
+                contexts = self._merge_contexts(page_contexts, contexts)
+            except Exception as exc:
+                logger.warning("Failed to load referenced page contexts: %s", exc)
 
         if contexts:
             yield {"type": "status", "label": "整理课程资料"}
@@ -352,10 +435,7 @@ class CourseRAGService:
 
     async def vector_search(self, args: VectorSearchArgs) -> list[dict[str, Any]]:
         vector_store = await asyncio.to_thread(self._get_vector_store)
-        if args.course_filter:
-            search_filter = {"Course": args.course_filter}
-        else:
-            search_filter = None
+        search_filter = self._vector_search_filter(args)
 
         def run_search() -> list[Any]:
             return vector_store.similarity_search(
@@ -376,6 +456,90 @@ class CourseRAGService:
             )
 
         return results
+
+    def _vector_search_filter(self, args: VectorSearchArgs) -> Optional[dict[str, Any]]:
+        if args.course_id:
+            try:
+                deck = build_course_deck(args.course_id)
+                source = self._course_source_from_deck(deck)
+            except (CourseNotFound, SlideCatalogError):
+                source = None
+
+            if source:
+                return {"source": source}
+
+        if args.course_filter:
+            return {"Course": args.course_filter}
+
+        return None
+
+    def _page_contexts_from_chroma(self, course_id: str, pages: list[int]) -> list[dict[str, Any]]:
+        if not pages:
+            return []
+
+        try:
+            import chromadb
+        except ImportError as exc:
+            logger.warning("Missing ChromaDB dependency for referenced pages: %s", exc)
+            return []
+
+        try:
+            deck = build_course_deck(course_id)
+        except (CourseNotFound, SlideCatalogError) as exc:
+            logger.warning("Cannot resolve course for referenced pages: %s", exc)
+            return []
+
+        source = self._course_source_from_deck(deck)
+        if not source:
+            return []
+
+        try:
+            client = chromadb.PersistentClient(path=str(self.chroma_dir))
+            collection = client.get_collection(self.chroma_collection)
+            result = collection.get(
+                where={"source": source},
+                include=["documents", "metadatas"],
+                limit=1000,
+            )
+        except Exception as exc:
+            logger.warning("Failed to load referenced pages from Chroma: %s", exc)
+            return []
+
+        wanted_pages = set(pages)
+        contexts: list[dict[str, Any]] = []
+        for document, metadata in zip(result.get("documents") or [], result.get("metadatas") or []):
+            if not isinstance(metadata, dict):
+                continue
+            if not any(self._page_range_contains(metadata.get("page"), page) for page in wanted_pages):
+                continue
+            content = str(document or "").strip()
+            if not content:
+                continue
+            contexts.append({"content": content, "metadata": dict(metadata)})
+
+        return sorted(contexts, key=lambda item: self._page_sort_key(item.get("metadata", {}).get("page")))[:8]
+
+    def _merge_contexts(
+        self,
+        primary: list[dict[str, Any]],
+        secondary: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        merged: list[dict[str, Any]] = []
+        seen: set[tuple[str, str, str]] = set()
+
+        for item in [*primary, *secondary]:
+            metadata = item.get("metadata", {}) if isinstance(item, dict) else {}
+            key = (
+                str(metadata.get("source") or ""),
+                str(metadata.get("page") or ""),
+                self._trim_text(str(item.get("content") or ""), 120),
+            )
+            if key in seen:
+                continue
+            seen.add(key)
+            merged.append(item)
+
+        return merged[:8]
 
     async def get_slide_image(self, args: SlideImageArgs) -> SlideImageContext:
         image_path = await asyncio.to_thread(get_slide_page_path, args.course_id, args.page)
@@ -558,7 +722,7 @@ class CourseRAGService:
             if not isinstance(metadata, dict):
                 continue
 
-            if self._page_start(metadata.get("page")) != page:
+            if not self._page_range_contains(metadata.get("page"), page):
                 continue
 
             content = str(document or "").strip()
@@ -575,6 +739,527 @@ class CourseRAGService:
                 chunks.append(content)
 
         return self._trim_text("\n\n".join(chunks), 2000)
+
+    def _quiz_contexts_from_chroma(self, deck: dict[str, Any]) -> list[dict[str, Any]]:
+        source = self._course_source_from_deck(deck)
+        if not source:
+            return []
+
+        candidates: list[dict[str, Any]] = []
+
+        try:
+            import chromadb
+        except ImportError as exc:
+            logger.warning("Missing ChromaDB dependency for quiz generation: %s", exc)
+        except Exception as exc:
+            logger.warning("Failed to import ChromaDB for quiz generation: %s", exc)
+        else:
+            try:
+                client = chromadb.PersistentClient(path=str(self.chroma_dir))
+                collection = client.get_collection(self.chroma_collection)
+                result = collection.get(
+                    where={"source": source},
+                    include=["documents", "metadatas"],
+                    limit=1000,
+                )
+                documents = result.get("documents") or []
+                metadatas = result.get("metadatas") or []
+                candidates = self._quiz_context_candidates(documents, metadatas)
+            except Exception as exc:
+                logger.warning("Failed to read quiz context from Chroma: %s", exc)
+
+        if not candidates:
+            candidates = self._quiz_context_candidates_from_export(source)
+
+        return self._quiz_contexts_from_candidates(candidates)
+
+    def _current_course_generation_contexts(self, deck: dict[str, Any]) -> list[dict[str, Any]]:
+        return self._add_course_metadata_to_contexts(
+            self._quiz_contexts_from_chroma(deck),
+            deck,
+        )
+
+    def _mindmap_generation_contexts(
+        self,
+        deck: dict[str, Any],
+        scope: Literal["current", "all"],
+    ) -> list[dict[str, Any]]:
+        if scope != "all":
+            return self._current_course_generation_contexts(deck)
+
+        current_course_id = str(deck.get("resolvedCourseId") or deck.get("courseId") or "")
+        try:
+            index = build_course_index()
+        except SlideCatalogError as exc:
+            logger.warning("Failed to build course index for all-course mind map: %s", exc)
+            return self._current_course_generation_contexts(deck)
+
+        courses = list(index.get("courses") or [])
+        courses.sort(key=lambda item: 0 if str(item.get("id") or "") == current_course_id else 1)
+        per_course_limit = max(2, min(4, 30 // max(1, len(courses))))
+        contexts: list[dict[str, Any]] = []
+        total_chars = 0
+
+        for course in courses:
+            course_id = str(course.get("id") or "")
+            if not course_id:
+                continue
+
+            try:
+                course_deck = build_course_deck(course_id)
+            except SlideCatalogError as exc:
+                logger.warning("Skipping missing course for all-course mind map: %s", exc)
+                continue
+
+            course_contexts = self._add_course_metadata_to_contexts(
+                self._quiz_contexts_from_chroma(course_deck),
+                course_deck,
+                include_course_in_label=True,
+            )
+
+            for item in course_contexts[:per_course_limit]:
+                content = str(item.get("content") or "")
+                if len(contexts) >= 30 or total_chars + len(content) > 20_000:
+                    break
+
+                next_item = dict(item)
+                next_item["sourceId"] = f"S{len(contexts) + 1}"
+                contexts.append(next_item)
+                total_chars += len(content)
+
+            if len(contexts) >= 30 or total_chars >= 20_000:
+                break
+
+        return contexts
+
+    def _add_course_metadata_to_contexts(
+        self,
+        contexts: list[dict[str, Any]],
+        deck: dict[str, Any],
+        include_course_in_label: bool = False,
+    ) -> list[dict[str, Any]]:
+        course_id = str(deck.get("resolvedCourseId") or deck.get("courseId") or "")
+        course_title = str(deck.get("title") or course_id or "")
+        annotated: list[dict[str, Any]] = []
+
+        for item in contexts:
+            next_item = dict(item)
+            next_item["courseId"] = course_id
+            next_item["courseTitle"] = course_title
+            if include_course_in_label:
+                page_label = str(next_item.get("label") or f"P{next_item.get('pageNumber')}")
+                next_item["label"] = f"{course_title} {page_label}"[:80]
+            annotated.append(next_item)
+
+        return annotated
+
+    def _quiz_context_candidates(self, documents: list[Any], metadatas: list[Any]) -> list[dict[str, Any]]:
+        candidates: list[dict[str, Any]] = []
+        seen: set[tuple[int, str]] = set()
+
+        for document, metadata in zip(documents, metadatas):
+            if not isinstance(metadata, dict):
+                continue
+
+            page = self._page_start(metadata.get("page"))
+            content = str(document or "").strip()
+            if page is None or not content:
+                continue
+
+            dedupe_key = (page, content[:160])
+            if dedupe_key in seen:
+                continue
+            seen.add(dedupe_key)
+
+            candidates.append(
+                {
+                    "page": page,
+                    "section": str(metadata.get("Section") or "").strip(),
+                    "topic": str(metadata.get("Topic") or "").strip(),
+                    "content": content,
+                }
+            )
+
+        return sorted(candidates, key=lambda item: (item["page"], item["section"], item["topic"]))
+
+    def _quiz_context_candidates_from_export(self, source: str) -> list[dict[str, Any]]:
+        export_path = REPO_ROOT / "chroma_db_export.md"
+        if not export_path.exists():
+            return []
+
+        try:
+            export_text = export_path.read_text(encoding="utf-8")
+        except OSError as exc:
+            logger.warning("Failed to read Chroma export for quiz generation: %s", exc)
+            return []
+
+        documents: list[str] = []
+        metadatas: list[dict[str, Any]] = []
+        block_pattern = re.compile(
+            r"### metadata\s*```json\s*(\{.*?\})\s*```\s*### document\s*```markdown\s*(.*?)\s*```",
+            re.DOTALL,
+        )
+
+        for match in block_pattern.finditer(export_text):
+            try:
+                metadata = json.loads(match.group(1))
+            except json.JSONDecodeError:
+                continue
+
+            if not isinstance(metadata, dict) or metadata.get("source") != source:
+                continue
+
+            metadatas.append(metadata)
+            documents.append(match.group(2).strip())
+
+        return self._quiz_context_candidates(documents, metadatas)
+
+    def _quiz_contexts_from_candidates(self, candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        candidates = sorted(candidates, key=lambda item: (item["page"], item["section"], item["topic"]))
+
+        contexts: list[dict[str, Any]] = []
+        total_chars = 0
+        for item in candidates:
+            if len(contexts) >= 24 or total_chars >= 16_000:
+                break
+
+            source_id = f"S{len(contexts) + 1}"
+            label = f"P{item['page']}"
+            heading = " / ".join(part for part in (item["section"], item["topic"]) if part)
+            content = self._trim_text(item["content"], 900)
+            total_chars += len(content)
+            contexts.append(
+                {
+                    "sourceId": source_id,
+                    "pageNumber": item["page"],
+                    "label": label,
+                    "heading": heading,
+                    "content": content,
+                }
+            )
+
+        return contexts
+
+    def _build_question_generation_messages(
+        self,
+        deck: dict[str, Any],
+        quiz_request: QuestionGenerateRequest,
+        contexts: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        course_name = str(deck.get("title") or deck.get("courseId") or "CS101")
+        type_text = ", ".join(quiz_request.types)
+        context_text = "\n\n".join(
+            (
+                f"[{item['sourceId']}]"
+                f"{' course=' + item['courseTitle'] if item.get('courseTitle') else ''}"
+                f" page={item['pageNumber']} label={item['label']}"
+                f"{' heading=' + item['heading'] if item.get('heading') else ''}\n"
+                f"{item['content']}"
+            )
+            for item in contexts
+        )
+        note_text = self._trim_text(quiz_request.currentNote, 2500) or "无"
+        prompt = self.prompts["question_generation_user"].format(
+            course_name=course_name,
+            count=quiz_request.count,
+            question_types=type_text,
+            context_text=context_text,
+            note_text=note_text,
+        )
+
+        return [
+            {"role": "system", "content": self.prompts["question_generation_system"]},
+            {"role": "user", "content": prompt},
+        ]
+
+    def _build_highlight_generation_messages(
+        self,
+        deck: dict[str, Any],
+        highlight_request: HighlightGenerateRequest,
+        contexts: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        course_name = str(deck.get("title") or deck.get("courseId") or "CS101")
+        context_text = "\n\n".join(
+            (
+                f"[{item['sourceId']}]"
+                f"{' course=' + item['courseTitle'] if item.get('courseTitle') else ''}"
+                f" page={item['pageNumber']} label={item['label']}"
+                f"{' heading=' + item['heading'] if item.get('heading') else ''}\n"
+                f"{item['content']}"
+            )
+            for item in contexts
+        )
+        note_text = self._trim_text(highlight_request.currentNote, 2500) or "无"
+        prompt = self.prompts["highlight_generation_user"].format(
+            course_name=course_name,
+            count=highlight_request.count,
+            context_text=context_text,
+            note_text=note_text,
+        )
+
+        return [
+            {"role": "system", "content": self.prompts["highlight_generation_system"]},
+            {"role": "user", "content": prompt},
+        ]
+
+    def _build_mindmap_generation_messages(
+        self,
+        deck: dict[str, Any],
+        mindmap_request: MindmapGenerateRequest,
+        contexts: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        course_name = str(deck.get("title") or deck.get("courseId") or "CS101")
+        if mindmap_request.scope == "all":
+            course_name = "CS101 全体课件"
+        context_text = "\n\n".join(
+            (
+                f"[{item['sourceId']}]"
+                f"{' course=' + item['courseTitle'] if item.get('courseTitle') else ''}"
+                f" page={item['pageNumber']} label={item['label']}"
+                f"{' heading=' + item['heading'] if item.get('heading') else ''}\n"
+                f"{item['content']}"
+            )
+            for item in contexts
+        )
+        note_text = self._trim_text(mindmap_request.currentNote, 2500) or "无"
+        focus_text = self._trim_text(mindmap_request.focus, 120) or "整节课"
+        prompt = self.prompts["mindmap_generation_user"].format(
+            course_name=course_name,
+            depth=mindmap_request.depth,
+            focus=focus_text,
+            context_text=context_text,
+            note_text=note_text,
+        )
+
+        return [
+            {"role": "system", "content": self.prompts["mindmap_generation_system"]},
+            {"role": "user", "content": prompt},
+        ]
+
+    def _normalize_generated_questions(
+        self,
+        data: dict[str, Any],
+        quiz_request: QuestionGenerateRequest,
+        contexts: list[dict[str, Any]],
+        course_id: str,
+    ) -> list[dict[str, Any]]:
+        raw_questions = data.get("questions") if isinstance(data, dict) else None
+        if not isinstance(raw_questions, list):
+            raise QuizGenerationError("Generated response does not contain questions.")
+
+        source_map = {item["sourceId"]: item for item in contexts}
+        normalized: list[dict[str, Any]] = []
+
+        for raw_item in raw_questions:
+            try:
+                item = self._model_validate(RawGeneratedQuestion, raw_item)
+            except ValidationError as exc:
+                raise QuizGenerationError("Generated question has invalid shape.") from exc
+
+            question = " ".join(item.question.strip().split())
+            explanation = item.explanation.strip()
+            if not question or not explanation:
+                raise QuizGenerationError("Generated question is missing text.")
+
+            if item.type == "single_choice":
+                options = [" ".join(option.strip().split()) for option in item.options]
+                if len(options) != 4 or any(not option for option in options):
+                    raise QuizGenerationError("Single choice questions must have four options.")
+            else:
+                options = ["正确", "错误"]
+
+            if item.answerIndex < 0 or item.answerIndex >= len(options):
+                raise QuizGenerationError("Generated answer index is out of range.")
+
+            source_ids = [source_id for source_id in item.sourceIds if source_id in source_map]
+            if not source_ids:
+                raise QuizGenerationError("Generated question does not cite valid course context.")
+
+            citations = []
+            seen_pages: set[tuple[str, int]] = set()
+            for source_id in source_ids[:2]:
+                source = source_map[source_id]
+                citation_course_id = str(source.get("courseId") or course_id)
+                page = int(source["pageNumber"])
+                seen_key = (citation_course_id, page)
+                if seen_key in seen_pages:
+                    continue
+                seen_pages.add(seen_key)
+                citations.append(
+                    {
+                        "courseId": citation_course_id,
+                        "pageNumber": page,
+                        "label": source["label"],
+                        "imageUrl": self._slide_image_url(citation_course_id, page),
+                    }
+                )
+
+            normalized.append(
+                {
+                    "id": f"q_{len(normalized) + 1}",
+                    "type": item.type,
+                    "question": question[:500],
+                    "options": options,
+                    "answerIndex": item.answerIndex,
+                    "explanation": explanation[:800],
+                    "citations": citations,
+                }
+            )
+
+            if len(normalized) >= quiz_request.count:
+                break
+
+        if len(normalized) < quiz_request.count:
+            raise QuizGenerationError("Generated fewer valid questions than requested.")
+
+        return normalized
+
+    def _normalize_generated_highlights(
+        self,
+        data: dict[str, Any],
+        highlight_request: HighlightGenerateRequest,
+        contexts: list[dict[str, Any]],
+        course_id: str,
+    ) -> list[dict[str, Any]]:
+        raw_highlights = data.get("highlights") if isinstance(data, dict) else None
+        if not isinstance(raw_highlights, list):
+            raise HighlightGenerationError("Generated response does not contain highlights.")
+
+        source_map = {item["sourceId"]: item for item in contexts}
+        normalized: list[dict[str, Any]] = []
+
+        for raw_item in raw_highlights:
+            try:
+                item = self._model_validate(RawGeneratedHighlight, raw_item)
+            except ValidationError as exc:
+                raise HighlightGenerationError("Generated highlight has invalid shape.") from exc
+
+            title = " ".join(item.title.strip().split())
+            summary = item.summary.strip()
+            if not title or not summary:
+                raise HighlightGenerationError("Generated highlight is missing text.")
+
+            source_ids = [source_id for source_id in item.sourceIds if source_id in source_map]
+            if not source_ids:
+                raise HighlightGenerationError("Generated highlight does not cite valid course context.")
+
+            citations = []
+            seen_pages: set[int] = set()
+            for source_id in source_ids[:2]:
+                source = source_map[source_id]
+                page = int(source["pageNumber"])
+                if page in seen_pages:
+                    continue
+                seen_pages.add(page)
+                citations.append(
+                    {
+                        "pageNumber": page,
+                        "label": source["label"],
+                        "imageUrl": self._slide_image_url(course_id, page),
+                    }
+                )
+
+            normalized.append(
+                {
+                    "id": f"h_{len(normalized) + 1}",
+                    "title": title[:80],
+                    "summary": summary[:700],
+                    "importance": item.importance,
+                    "citations": citations,
+                }
+            )
+
+            if len(normalized) >= highlight_request.count:
+                break
+
+        if len(normalized) < highlight_request.count:
+            raise HighlightGenerationError("Generated fewer valid highlights than requested.")
+
+        return normalized
+
+    def _normalize_generated_mindmap(
+        self,
+        data: dict[str, Any],
+        mindmap_request: MindmapGenerateRequest,
+        contexts: list[dict[str, Any]],
+        course_id: str,
+    ) -> dict[str, Any]:
+        raw_root = data.get("mindmap") if isinstance(data, dict) else None
+        if not isinstance(raw_root, dict):
+            raise MindmapGenerationError("Generated response does not contain a mindmap.")
+
+        source_map = {item["sourceId"]: item for item in contexts}
+
+        def citations_from_source_ids(source_ids: Any) -> list[dict[str, Any]]:
+            if not isinstance(source_ids, list):
+                return []
+
+            citations = []
+            seen_pages: set[tuple[str, int]] = set()
+            for source_id in source_ids:
+                source = source_map.get(str(source_id))
+                if not source:
+                    continue
+                citation_course_id = str(source.get("courseId") or course_id)
+                page = int(source["pageNumber"])
+                seen_key = (citation_course_id, page)
+                if seen_key in seen_pages:
+                    continue
+                seen_pages.add(seen_key)
+                citations.append(
+                    {
+                        "courseId": citation_course_id,
+                        "pageNumber": page,
+                        "label": source["label"],
+                        "imageUrl": self._slide_image_url(citation_course_id, page),
+                    }
+                )
+                if len(citations) >= 2:
+                    break
+
+            return citations
+
+        def normalize_node(raw_node: Any, depth: int, path: str) -> Optional[dict[str, Any]]:
+            if not isinstance(raw_node, dict):
+                return None
+
+            title = " ".join(str(raw_node.get("title") or "").strip().split())
+            if not title:
+                return None
+
+            summary = " ".join(str(raw_node.get("summary") or "").strip().split())
+            children = []
+            if depth < mindmap_request.depth:
+                raw_children = raw_node.get("children")
+                if isinstance(raw_children, list):
+                    for index, raw_child in enumerate(raw_children[:8], start=1):
+                        child = normalize_node(raw_child, depth + 1, f"{path}_{index}")
+                        if child:
+                            children.append(child)
+
+            return {
+                "id": f"m_{path}",
+                "title": title[:90],
+                "summary": summary[:500],
+                "citations": citations_from_source_ids(raw_node.get("sourceIds")),
+                "children": children,
+            }
+
+        mindmap = normalize_node(raw_root, 1, "1")
+        if not mindmap:
+            raise MindmapGenerationError("Generated mind map root is invalid.")
+
+        if self._count_mindmap_nodes(mindmap) < 2:
+            raise MindmapGenerationError("Generated mind map has too few nodes.")
+
+        return mindmap
+
+    def _count_mindmap_nodes(self, node: dict[str, Any]) -> int:
+        return 1 + sum(
+            self._count_mindmap_nodes(child)
+            for child in node.get("children", [])
+            if isinstance(child, dict)
+        )
 
     def _course_source_from_deck(self, deck: dict[str, Any]) -> Optional[str]:
         resolved_course_id = str(deck.get("resolvedCourseId") or deck.get("courseId") or "")
@@ -894,6 +1579,24 @@ class CourseRAGService:
                 return message.content.strip()
         return ""
 
+    def _page_references_from_query(self, query: str) -> list[int]:
+        pages = []
+        for match in PAGE_REFERENCE_RE.finditer(query or ""):
+            page = int(match.group(1))
+            if page > 0:
+                pages.append(page)
+        return self._dedupe_ints(pages)
+
+    def _dedupe_ints(self, values: list[int]) -> list[int]:
+        result: list[int] = []
+        seen: set[int] = set()
+        for value in values:
+            if value in seen:
+                continue
+            seen.add(value)
+            result.append(value)
+        return result
+
     def _page_start(self, value: Any) -> Optional[int]:
         if value is None:
             return None
@@ -904,6 +1607,14 @@ class CourseRAGService:
 
         page = int(match.group(0))
         return page if page > 0 else None
+
+    def _page_range_contains(self, value: Any, page: int) -> bool:
+        numbers = [int(match) for match in PAGE_START_RE.findall(str(value or ""))]
+        if not numbers:
+            return False
+        if len(numbers) == 1:
+            return numbers[0] == page
+        return min(numbers[0], numbers[-1]) <= page <= max(numbers[0], numbers[-1])
 
     def _slide_image_url(self, course_id: str, page: int) -> str:
         return f"/api/slides/{quote(course_id, safe='')}/pages/{page}"

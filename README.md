@@ -1,139 +1,201 @@
 <p align="center">
-  <img src="frontend/assets/cs101-copilot-logo.png" alt="CS101_Copilot" width="520" />
+  <img src="frontend/assets/cs101-copilot-logo.png" alt="CS101_Copilot" width="340" />
 </p>
 
-CS101 Copilot 是一个面向大湾区大学《计算机科学导论》课程的智能学习助手。项目将ChromaDB 向量检索、课件、多轮对话、笔记本和模型配置整合在同一个 Flask + 静态前端应用中，帮助学生围绕当前课件完成提问、复习、记录和跳转溯源。
+<p align="center">
+  <strong>面向 CS101 课程的 AI 学习工作台</strong>
+</p>
 
-## 项目定位
+<p align="center">
+  课件阅读 · RAG 问答 · 引用跳转 · 智能笔记 · 练习题 · 划重点 · 思维导图
+</p>
 
-这是一个课程学习类 RAG 应用，核心目标不是做通用聊天机器人，而是围绕 CS101 课件提供“能引用来源、有全局视野、能保存学习过程”的学习工作台。
+CS101_Copilot 将课程 slide、Markdown 资料、ChromaDB 向量库和多模型接口整合在同一个 Flask + 原生前端应用中。学生可以边看课件边提问、记录笔记、生成练习题、提炼重点，并通过引用快速跳回来源页核对内容。
 
-系统会根据用户问题判断是否需要读取课程知识库、当前 slide 图片或仅进行普通对话；回答中会保留可点击的页码引用，方便学生回到对应课件页验证内容。
+## 功能矩阵
 
-## 核心功能
+| 模块 | 能力 |
+| --- | --- |
+| 课件阅读 | 课程选择、slide 浏览、页码跳转、滚动定位、缩放 |
+| RAG 问答 | 意图路由、向量检索、当前页图片理解、流式回答 |
+| 来源引用 | 圆形引用标记、悬停提示、点击跳转、跨课程跳转 |
+| 对话记忆 | 新建对话、历史对话、删除对话、自动恢复最近对话 |
+| 对话标题 | 首问生成标题、当前课程优先、课程开场建议 |
+| Markdown 笔记 | 多笔记本、自动保存、公式插入、标题生成、导出 `.md` |
+| AI 补全 | 光标处 ghost、`Tab` 接受、可独立配置模型 |
+| 练习题 | 自动出题、选择题、判断题、即时反馈、来源跳转 |
+| 划重点 | 重点提炼、重要程度标签、复习说明、来源跳转 |
+| 思维导图 | 当前课件 / 全体课件、聚焦主题、2-4 层结构 |
+| 导图交互 | 展开折叠、缩放、节点追问、导出 PNG / PDF |
+| 设置面板 | 模型接口、thinking 开关、回答语气 |
 
-- 课程课件浏览：加载 `course_slide/` 中的课件页图片，支持按课程和页码阅读。
-- RAG 问答：基于 `chroma_db/` 中的 `cs101_course_markdown` collection 检索课程 Markdown 切块。
-- 多模态回答：涉及“这页、图中、公式、代码”等问题时，会读取当前页 WebP 图片并传给模型。
-- 溯源引用：回答中以 `【P5】` 或 `【courseId-5】` 标注来源，前端可点击跳转到对应 slide。
-- 流式状态：聊天过程中通过 SSE 实时显示“分析输入”“读取知识库”“思考”等状态。
-- 对话记忆：支持新建对话、历史对话、删除历史，并保存完整消息。
-- 课程开场总结：新对话会根据当前课程在 Chroma 中的标题大纲生成简短学习建议。
-- 多笔记本：左侧笔记不绑定课程，支持自动保存、Markdown 编辑、导出 `.md`。
-- AI 自动补全：笔记区可基于当前页文本和上一条 AI 回答生成灰色补全，按 Tab 接受。
-- 模型设置：右上角设置面板可配置替代本地部署 API、自动补全 API 和回答模式。
+## 界面能力
+
+- 左侧：课件阅读器和课程笔记。
+- 右侧：AI Chat 学习助手。
+- 顶部：课程选择和模型设置。
+- 学习工具：练习题、划重点、思维导图。
+- 引用系统：回答、题目、重点、导图都能回跳 slide。
 
 ## 技术栈
 
-- 后端：Flask、SSE、Pydantic、httpx
-- 检索：ChromaDB、LangChain Chroma、HuggingFace Embeddings
-- 模型接口：OpenAI-compatible `/v1/chat/completions`
-- 前端：原生 HTML / CSS / JavaScript
-- Markdown 与公式：自写 Markdown 渲染逻辑 + 本地 MathJax
-- 持久化：本地 JSON 文件保存对话、笔记本和用户设置
+| 层级 | 技术 |
+| --- | --- |
+| 后端 | Flask、SSE、Pydantic、httpx |
+| 检索 | ChromaDB、LangChain Chroma |
+| 模型 | OpenAI-compatible Chat Completions |
+| 前端 | HTML、CSS、JavaScript |
+| 渲染 | Markdown、MathJax、D3 |
+| 存储 | 本地 JSON、ChromaDB |
 
-## 目录结构
+## 项目结构
 
 ```text
 backend/
-  main.py                  # Flask 路由、SSE 桥接、静态资源入口
-  rag_service.py           # RAG 路由、检索、多模态装配、最终回答
-  model_client.py          # 模型 provider、任务映射和 OpenAI-compatible 调用
-  settings_store.py        # 本地用户设置读写
-  conversation_store.py    # 对话历史存储
-  notebook_store.py        # 笔记本 JSON 存储
-  notebook_service.py      # 笔记保存、标题生成、导出逻辑
+  main.py                    # Flask 路由
+  rag_service.py             # RAG 与学习工具
+  rag_models.py              # 请求和响应模型
+  model_client.py            # 模型调用
+  conversation_store.py      # 对话存储
+  notebook_store.py          # 笔记本存储
+  notebook_service.py        # 笔记服务
+  settings_store.py          # 用户设置
   config/
-    local_models.json      # 本地部署模型默认配置
-    siliconflow_models.json# 外部模型默认配置
-    model_tasks.json       # 各任务使用的 provider
-    prompts.json           # Router、回答、标题、补全等 prompt
+    local_models.json
+    siliconflow_models.json
+    model_tasks.json
+    prompts.json
 
 frontend/
-  index.html               # 主页面
-  styles.css               # UI 样式
-  app.js                   # 课件、聊天、笔记和设置交互
-  assets/                  # 前端图形资源
+  index.html
+  styles.css
+  app.js
+  js/
+    state.js
+    api.js
+    course-slides.js
+    markdown.js
+    learning-tools.js
+    mindmap.js
+    chat-rendering.js
+    chat-flow.js
+    notebook-data.js
+    notebook-editor.js
+    notebook-autocomplete.js
+    notebook-toolbar.js
 
-chroma_db/                 # ChromaDB 向量库
-course_data/               # 课程 Markdown
-course_slide/              # 课件页图片
+chroma_db/
+course_data/
+course_slide/
 ```
 
-## 本地运行
+## 快速开始
 
-先安装后端依赖：
+安装依赖：
 
 ```bash
 python3 -m venv .venv
 .venv/bin/pip install -r backend/requirements.txt
 ```
 
-启动 Flask：
+启动服务：
 
 ```bash
 .venv/bin/python backend/main.py
 ```
 
-默认访问地址：
+默认访问：
 
 ```text
 http://127.0.0.1:5001
 ```
 
-可以通过环境变量调整服务地址：
+指定地址：
 
 ```bash
 FLASK_HOST=127.0.0.1 FLASK_PORT=5001 .venv/bin/python backend/main.py
 ```
 
-## 模型配置
+## 配置
 
-默认模型 provider 写在：
+参考 `.env.example`：
 
-- `backend/config/local_models.json`
-- `backend/config/siliconflow_models.json`
-- `backend/config/model_tasks.json`
+```text
+FLASK_HOST=127.0.0.1
+FLASK_PORT=5001
+FLASK_DEBUG=1
+COURSE_SLIDE_ROOT=course_slide
+COURSE_NOTES_PATH=backend/user_notes.json
+COURSE_CHAT_HISTORY_PATH=backend/chat_conversations.json
+COURSE_NOTEBOOK_PATH=backend/note_notebooks.json
+COURSE_USER_SETTINGS_PATH=backend/user_settings.json
+CHROMA_PERSIST_DIR=chroma_db
+CHROMA_COLLECTION_NAME=cs101_course_markdown
+EMBEDDING_MODEL=BAAI/bge-m3
+```
 
-页面右上角“三点”设置面板可以覆盖运行时配置：
+模型配置：
 
-- 替代本地部署 API：用于替换本地 `qwen` / `deepseek` provider。
-- 自动补全 API：用于替换笔记自动补全 provider。
-- 回答模式：可在“友好”和“严肃”之间切换，只影响最终回答语气。
+```text
+backend/config/local_models.json
+backend/config/siliconflow_models.json
+backend/config/model_tasks.json
+backend/config/prompts.json
+```
 
-用户运行时设置会保存到：
+运行时设置：
 
 ```text
 backend/user_settings.json
 ```
 
-该文件只用于本地单用户配置，不应提交到 Git。
+## 公开发布脱敏
 
-## 数据文件
-
-以下文件是本地运行产生的用户数据：
-
-- `backend/chat_conversations.json`
-- `backend/note_notebooks.json`
-- `backend/user_settings.json`
-
-这些文件已加入 `.gitignore`，用于避免提交个人对话、笔记和 API 配置。
-
-## 检查命令
-
-后端语法检查：
+`backend/config/siliconflow_models.json` 已被 Git 跟踪。公开发布到 GitHub 前，请生成脱敏 worktree：
 
 ```bash
-PYTHONPYCACHEPREFIX=/private/tmp/codex_pycache python3 -m py_compile backend/main.py backend/model_client.py backend/rag_service.py backend/config_loader.py backend/settings_store.py
+python3 scripts/prepare_github_public_branch.py
+cd /private/tmp/cs101-copilot-github-public
+git add -A
+git commit -m "Update public release"
+git push github HEAD:main
 ```
 
-前端语法检查：
+该流程会清空公开版本中的 `api_key` 字段，同时保留内部仓库的默认 key。
+
+## 本地数据
+
+以下文件不建议提交到公开仓库：
+
+```text
+backend/user_settings.json
+backend/chat_conversations.json
+backend/note_notebooks.json
+```
+
+公开发布前也请确认课程资料可分发：
+
+```text
+course_data/
+course_slide/
+chroma_db/
+```
+
+## 开发检查
+
+后端检查：
 
 ```bash
-node --check frontend/app.js
+PYTHONPYCACHEPREFIX=/private/tmp/codex_pycache python3 -m py_compile backend/main.py backend/model_client.py backend/rag_service.py backend/rag_models.py backend/config_loader.py backend/settings_store.py
 ```
 
-配置文件检查：
+前端检查：
+
+```bash
+for f in frontend/js/*.js frontend/app.js; do node --check "$f" || exit 1; done
+```
+
+配置检查：
 
 ```bash
 python3 -m json.tool backend/config/local_models.json
@@ -141,3 +203,21 @@ python3 -m json.tool backend/config/siliconflow_models.json
 python3 -m json.tool backend/config/model_tasks.json
 python3 -m json.tool backend/config/prompts.json
 ```
+
+## 许可证
+
+本项目基于 GNU General Public License v2.0 or later 发布。详见 [LICENSE](LICENSE)。
+
+## 作者
+
+- [Sirui Liang](https://astra-ranger.github.io/)
+- [Bohan Deng](https://bohan.bohandeng102647.workers.dev/)
+- Weinan Guan
+
+## Completed by
+
+[Sirui Liang](https://astra-ranger.github.io/), [Bohan Deng](https://bohan.bohandeng102647.workers.dev/), and Weinan Guan.
+
+## 致谢
+
+感谢徐志伟老师与李晓明老师为计算机科学教育做出的贡献，赋予了本项目最核心的价值。
