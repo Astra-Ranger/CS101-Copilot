@@ -54,6 +54,10 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_CHROMA_DIR = "chroma_db"
 DEFAULT_CHROMA_COLLECTION = "cs101_course_markdown"
 DEFAULT_EMBEDDING_MODEL = "BAAI/bge-m3"
+DEFAULT_HF_ENDPOINT = "https://hf-mirror.com"
+
+if not os.getenv("HF_ENDPOINT"):
+    os.environ["HF_ENDPOINT"] = DEFAULT_HF_ENDPOINT
 
 VISUAL_QUERY_RE = re.compile(r"(这页|这一页|这里|图中|图片|截图|公式|代码|这个图|这张图)")
 COURSE_QUERY_RE = re.compile(
