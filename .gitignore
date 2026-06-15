@@ -85,6 +85,8 @@ backend/chat_conversations.json
 backend/user_notes.json
 backend/note_notebooks.json
 backend/user_settings.json
+backend/digital_human_lectures.json
+backend/digital_human_media/
 
 # ========================================
 # 6. IDE 与编辑器 (IDE & Editors)

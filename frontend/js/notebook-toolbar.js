@@ -112,6 +112,12 @@ function handleGlobalKeydown(event) {
 
   if (event.key === "Escape" && state.isSettingsOpen) {
     closeSettingsPanel();
+    return;
+  }
+
+  if (event.key === "Escape" && state.digitalHuman.isOpen) {
+    state.digitalHuman.isOpen = false;
+    renderDigitalHumanMenu();
   }
 }
 
@@ -146,6 +152,7 @@ async function init() {
   elements.quizButton.addEventListener("click", handleQuizClick);
   elements.highlightButton.addEventListener("click", handleHighlightClick);
   elements.mindmapButton.addEventListener("click", handleMindmapClick);
+  elements.digitalHumanButton.addEventListener("click", handleDigitalHumanClick);
   elements.noteEditor.addEventListener("input", handleNoteInput);
   elements.noteEditor.addEventListener("input", renderNoteReferences);
   elements.noteEditor.addEventListener("keydown", handleNoteEditorKeydown);

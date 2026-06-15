@@ -29,6 +29,12 @@ CHAT_HISTORY_PATH = Path(
     os.getenv("COURSE_CHAT_HISTORY_PATH", REPO_ROOT / "backend" / "chat_conversations.json")
 )
 USER_SETTINGS_PATH = Path(os.getenv("COURSE_USER_SETTINGS_PATH", REPO_ROOT / "backend" / "user_settings.json"))
+DIGITAL_HUMAN_HISTORY_PATH = Path(
+    os.getenv("BAIDU_DH_HISTORY_PATH", REPO_ROOT / "backend" / "digital_human_lectures.json")
+)
+DIGITAL_HUMAN_MEDIA_ROOT = Path(
+    os.getenv("BAIDU_DH_MEDIA_ROOT", REPO_ROOT / "backend" / "digital_human_media")
+)
 
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
@@ -67,6 +73,8 @@ from backend.rag_service import (  # noqa: E402
     QuizContextUnavailable,
     QuizGenerationError,
 )
+from backend.digital_human_service import DigitalHumanService  # noqa: E402
+from backend.baidu_digital_human_client import BaiduDigitalHumanError  # noqa: E402
 from backend.config_loader import load_json_config  # noqa: E402
 from backend.settings_store import (  # noqa: E402
     public_settings as public_user_settings,
@@ -77,6 +85,11 @@ from backend.settings_store import (  # noqa: E402
 app = Flask(__name__, static_folder=str(FRONTEND_DIR), static_url_path="")
 rag_service = CourseRAGService()
 notebook_service = NotebookService(NOTEBOOKS_PATH, rag_service)
+digital_human_service = DigitalHumanService(
+    rag_service=rag_service,
+    store_path=DIGITAL_HUMAN_HISTORY_PATH,
+    media_root=DIGITAL_HUMAN_MEDIA_ROOT,
+)
 
 
 def not_implemented(feature: str):
@@ -329,6 +342,58 @@ def get_course_slide_page(course_id: str, page_number: int):
         return error_response(404, "SLIDE_NOT_FOUND", str(exc))
     except SlideCatalogError as exc:
         return error_response(500, "SLIDE_CATALOG_ERROR", str(exc))
+
+
+@app.post("/api/digital-human/lectures")
+def create_digital_human_lecture():
+    payload = request.get_json(silent=True) or {}
+    if not isinstance(payload, dict):
+        return error_response(400, "INVALID_DIGITAL_HUMAN_REQUEST", "Request body must be a JSON object.")
+
+    try:
+        lecture = digital_human_service.create_lecture(payload)
+    except BaiduDigitalHumanError as exc:
+        return error_response(500, exc.code, str(exc))
+    except ValueError as exc:
+        return error_response(400, "INVALID_DIGITAL_HUMAN_REQUEST", str(exc))
+    except CourseNotFound as exc:
+        return error_response(404, "COURSE_NOT_FOUND", str(exc))
+    except SlideCatalogError as exc:
+        return error_response(500, "SLIDE_CATALOG_ERROR", str(exc))
+    except Exception as exc:
+        app.logger.exception("Failed to create digital human lecture")
+        return error_response(500, "DIGITAL_HUMAN_CREATE_FAILED", str(exc))
+
+    return jsonify({"lecture": lecture})
+
+
+@app.get("/api/digital-human/lectures")
+def list_digital_human_lectures():
+    course_id = request.args.get("courseId")
+    lectures = digital_human_service.list_lectures(course_id=course_id)
+    return jsonify({"lectures": lectures})
+
+
+@app.get("/api/digital-human/lectures/<lecture_id>")
+def get_digital_human_lecture(lecture_id: str):
+    lecture = digital_human_service.get_lecture(lecture_id)
+    if not lecture:
+        return error_response(404, "DIGITAL_HUMAN_LECTURE_NOT_FOUND", "Digital human lecture not found.")
+    return jsonify({"lecture": lecture})
+
+
+@app.get("/api/digital-human/media/<lecture_id>/<filename>")
+def get_digital_human_media(lecture_id: str, filename: str):
+    try:
+        media_path = digital_human_service.media_path(lecture_id, filename)
+    except ValueError as exc:
+        return error_response(400, "INVALID_DIGITAL_HUMAN_MEDIA_PATH", str(exc))
+
+    if not media_path.exists() or not media_path.is_file():
+        return error_response(404, "DIGITAL_HUMAN_MEDIA_NOT_FOUND", "Digital human media not found.")
+
+    mimetype = "text/vtt" if media_path.suffix.lower() == ".vtt" else None
+    return send_file(media_path, mimetype=mimetype)
 
 
 @app.get("/api/settings")

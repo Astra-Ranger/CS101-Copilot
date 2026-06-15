@@ -104,6 +104,10 @@ async function handleCourseChange(event) {
   renderQuizMenu();
   renderHighlightMenu();
   renderMindmapMenu();
+  if (state.digitalHuman.isOpen) {
+    await loadDigitalHumanLectures();
+  }
+  renderDigitalHumanMenu();
   await loadLatestConversationForCurrentCourse();
 }
 

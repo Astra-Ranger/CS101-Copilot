@@ -125,6 +125,58 @@ async function generateCourseMindmap(courseId, payload) {
   return data;
 }
 
+async function createDigitalHumanLecture(payload) {
+  const response = await fetch("/api/digital-human/lectures", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(payload),
+  });
+  const data = await response.json().catch(() => ({}));
+
+  if (!response.ok) {
+    const message = data.message || data.error || "digital human api unavailable";
+    throw new Error(message);
+  }
+
+  return data;
+}
+
+async function fetchDigitalHumanLecture(lectureId) {
+  const response = await fetch(
+    `/api/digital-human/lectures/${encodeURIComponent(lectureId)}`,
+    { cache: "no-store" },
+  );
+  const data = await response.json().catch(() => ({}));
+
+  if (!response.ok) {
+    const message = data.message || data.error || "digital human lecture unavailable";
+    throw new Error(message);
+  }
+
+  return data;
+}
+
+async function fetchDigitalHumanLectures(courseId) {
+  const params = new URLSearchParams();
+  if (courseId) {
+    params.set("courseId", courseId);
+  }
+  const suffix = params.toString() ? `?${params.toString()}` : "";
+  const response = await fetch(`/api/digital-human/lectures${suffix}`, {
+    cache: "no-store",
+  });
+  const data = await response.json().catch(() => ({}));
+
+  if (!response.ok) {
+    const message = data.message || data.error || "digital human history unavailable";
+    throw new Error(message);
+  }
+
+  return data;
+}
+
 async function fetchChatConversations(courseId) {
   const params = new URLSearchParams({ courseId });
   const response = await fetch(`/api/chat/conversations?${params.toString()}`, {

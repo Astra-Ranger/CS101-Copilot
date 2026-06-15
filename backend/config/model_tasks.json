@@ -31,5 +31,9 @@
   "final_answer": {
     "primary": "qwen",
     "fallback": "siliconflow_qwen"
+  },
+  "digital_human_script": {
+    "primary": "qwen",
+    "fallback": "siliconflow_qwen"
   }
 }

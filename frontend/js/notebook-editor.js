@@ -206,9 +206,11 @@ function handleHistoryClick() {
     state.quiz.isOpen = false;
     state.highlights.isOpen = false;
     state.mindmap.isOpen = false;
+    state.digitalHuman.isOpen = false;
     renderQuizMenu();
     renderHighlightMenu();
     renderMindmapMenu();
+    renderDigitalHumanMenu();
   }
   renderHistoryMenu();
 }
@@ -219,9 +221,11 @@ function handleQuizClick() {
     state.isHistoryOpen = false;
     state.highlights.isOpen = false;
     state.mindmap.isOpen = false;
+    state.digitalHuman.isOpen = false;
     renderHistoryMenu();
     renderHighlightMenu();
     renderMindmapMenu();
+    renderDigitalHumanMenu();
   }
   renderQuizMenu();
 }
@@ -232,9 +236,11 @@ function handleHighlightClick() {
     state.isHistoryOpen = false;
     state.quiz.isOpen = false;
     state.mindmap.isOpen = false;
+    state.digitalHuman.isOpen = false;
     renderHistoryMenu();
     renderQuizMenu();
     renderMindmapMenu();
+    renderDigitalHumanMenu();
   }
   renderHighlightMenu();
 }
@@ -245,9 +251,11 @@ function handleMindmapClick() {
     state.isHistoryOpen = false;
     state.quiz.isOpen = false;
     state.highlights.isOpen = false;
+    state.digitalHuman.isOpen = false;
     renderHistoryMenu();
     renderQuizMenu();
     renderHighlightMenu();
+    renderDigitalHumanMenu();
   }
   renderMindmapMenu();
 }

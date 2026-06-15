@@ -10,7 +10,10 @@ from pathlib import Path
 
 DEFAULT_OUTPUT = Path("/private/tmp/cs101-copilot-github-public")
 DEFAULT_BASE = "github/main"
-SILICONFLOW_CONFIG = Path("backend/config/siliconflow_models.json")
+MODEL_CONFIGS = (
+    Path("backend/config/local_models.json"),
+    Path("backend/config/siliconflow_models.json"),
+)
 
 
 def run_git(args: list[str], cwd: Path) -> str:
@@ -67,30 +70,46 @@ def remove_empty_dirs(root: Path) -> None:
                 pass
 
 
-def sanitize_siliconflow_config(repo: Path) -> None:
-    config_path = repo / SILICONFLOW_CONFIG
+def sanitize_model_config(repo: Path, relative_path: Path) -> bool:
+    config_path = repo / relative_path
     if not config_path.exists():
-        return
+        return False
 
     data = json.loads(config_path.read_text(encoding="utf-8"))
     providers = data.get("providers", {})
+    changed = False
 
     if isinstance(providers, dict):
         for provider in providers.values():
             if isinstance(provider, dict) and "api_key" in provider:
-                provider["api_key"] = ""
+                if provider["api_key"] != "":
+                    provider["api_key"] = ""
+                    changed = True
 
-    config_path.write_text(
-        json.dumps(data, ensure_ascii=False, indent=2) + "\n",
-        encoding="utf-8",
-    )
+    if changed:
+        config_path.write_text(
+            json.dumps(data, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+
+    return True
+
+
+def sanitize_model_configs(repo: Path) -> list[Path]:
+    sanitized_paths: list[Path] = []
+
+    for relative_path in MODEL_CONFIGS:
+        if sanitize_model_config(repo, relative_path):
+            sanitized_paths.append(relative_path)
+
+    return sanitized_paths
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
             "Create a GitHub-safe worktree snapshot from the current working tree "
-            "while clearing SiliconFlow API keys."
+            "while clearing committed model API keys."
         )
     )
     parser.add_argument(
@@ -117,11 +136,13 @@ def main() -> None:
 
     run_git(["worktree", "add", "--detach", str(output), args.base], source_repo)
     copy_working_tree(source_repo, output)
-    sanitize_siliconflow_config(output)
+    sanitized_paths = sanitize_model_configs(output)
 
     status = run_git(["status", "--short"], output).strip()
     print(f"Prepared GitHub-safe worktree: {output}")
-    print("Sanitized: backend/config/siliconflow_models.json")
+    print("Sanitized:")
+    for sanitized_path in sanitized_paths:
+        print(f"  {sanitized_path}")
     print()
     print("Next commands:")
     print(f"  cd {output}")

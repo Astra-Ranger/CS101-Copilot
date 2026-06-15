@@ -723,10 +723,18 @@ textarea {
   overflow: visible;
 }
 
-.notebook-menu {
+.digital-human-menu {
   position: absolute;
   inset: 45px 12px auto auto;
   z-index: 45;
+  width: min(680px, calc(100% - 24px));
+  overflow: visible;
+}
+
+.notebook-menu {
+  position: absolute;
+  inset: 45px 12px auto auto;
+  z-index: 46;
   width: min(360px, calc(100% - 24px));
   overflow: visible;
 }
@@ -762,6 +770,11 @@ textarea {
 .mindmap-dialog {
   gap: 8px;
   max-height: min(700px, calc(100vh - 140px));
+}
+
+.digital-human-dialog {
+  gap: 10px;
+  max-height: min(760px, calc(100vh - 120px));
 }
 
 .chat-history-dialog-header {
@@ -1035,6 +1048,108 @@ textarea {
 .mindmap-scope-toggle button:disabled {
   cursor: not-allowed;
   opacity: 0.65;
+}
+
+.digital-human-controls {
+  display: grid;
+  grid-template-columns: auto auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  padding: 2px 4px 4px;
+}
+
+.digital-human-mode-toggle {
+  min-width: 132px;
+}
+
+.digital-human-topic-input {
+  min-width: 0;
+  height: 32px;
+  border: 1px solid #e4e4e7;
+  border-radius: 6px;
+  background: #fff;
+  color: var(--text);
+  padding: 0 10px;
+  font: inherit;
+  font-size: 12px;
+}
+
+.digital-human-topic-input:focus {
+  border-color: #93c5fd;
+  outline: 0;
+  box-shadow: 0 0 0 3px rgb(147 197 253 / 22%);
+}
+
+.digital-human-active {
+  display: grid;
+  gap: 10px;
+}
+
+.digital-human-status {
+  width: fit-content;
+  border: 1px solid #dbeafe;
+  border-radius: 999px;
+  background: #eff6ff;
+  color: #1d4ed8;
+  padding: 5px 9px;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.digital-human-status.ready {
+  border-color: #bbf7d0;
+  background: #f0fdf4;
+  color: #15803d;
+}
+
+.digital-human-status.failed {
+  border-color: #fecaca;
+  background: #fef2f2;
+  color: #b91c1c;
+}
+
+.digital-human-video {
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  border: 1px solid #e4e4e7;
+  border-radius: 8px;
+  background: #020617;
+}
+
+.digital-human-script {
+  max-height: 150px;
+  overflow: auto;
+  border: 1px solid #eceff3;
+  border-radius: 8px;
+  background: #fafafa;
+  color: var(--text);
+  padding: 10px;
+  font-size: 13px;
+  line-height: 1.65;
+}
+
+.digital-human-history {
+  display: grid;
+  gap: 6px;
+}
+
+.digital-human-history-item {
+  display: grid;
+  width: 100%;
+  gap: 3px;
+  border: 1px solid #eceff3;
+  border-radius: 8px;
+  background: #fff;
+  color: inherit;
+  cursor: pointer;
+  padding: 9px 10px;
+  text-align: left;
+}
+
+.digital-human-history-item:hover,
+.digital-human-history-item.active {
+  border-color: #bfdbfe;
+  background: #f8fafc;
 }
 
 .mindmap-focus-input {
@@ -1758,5 +1873,19 @@ textarea {
 
   .panel {
     min-height: 70vh;
+  }
+
+  .digital-human-menu {
+    inset: 45px 8px auto 8px;
+    width: auto;
+  }
+
+  .digital-human-controls {
+    grid-template-columns: 1fr;
+    align-items: stretch;
+  }
+
+  .digital-human-mode-toggle {
+    width: 100%;
   }
 }

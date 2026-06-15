@@ -66,6 +66,7 @@ COURSE_QUERY_RE = re.compile(
 )
 PAGE_START_RE = re.compile(r"\d+")
 PAGE_REFERENCE_RE = re.compile(r"(?:\b[Pp]\s*|第\s*)(\d{1,3})\s*(?:页)?")
+CITATION_TOKEN_RE = re.compile(r"【([^】]+)】")
 
 
 class CourseRAGService:
@@ -283,6 +284,60 @@ class CourseRAGService:
             "scope": mindmap_request.scope,
             "generatedAt": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
             "mindmap": mindmap,
+        }
+
+    async def generate_digital_human_script(
+        self,
+        *,
+        course_id: str,
+        current_page: int,
+        mode: Literal["topic", "lesson"],
+        topic: str,
+        duration_minutes: int,
+    ) -> dict[str, Any]:
+        target_chars = max(220, min(1500, int(duration_minutes) * 260))
+        deck = await asyncio.to_thread(build_course_deck, course_id)
+        resolved_course_id = str(deck.get("resolvedCourseId") or course_id)
+
+        if mode == "topic":
+            contexts = await self.vector_search(
+                VectorSearchArgs(
+                    query=self._trim_text(topic, 200),
+                    k=8,
+                )
+            )
+            citations = self._build_citations(resolved_course_id, contexts)
+            messages = self._build_digital_human_topic_messages(
+                course_id=resolved_course_id,
+                topic=topic,
+                contexts=contexts,
+                citations=citations,
+                target_chars=target_chars,
+            )
+        else:
+            contexts = await asyncio.to_thread(self._current_course_generation_contexts, deck)
+            citations = self._citations_from_generation_contexts(resolved_course_id, contexts)
+            outline = await asyncio.to_thread(self._course_outline_from_chroma, deck)
+            messages = self._build_digital_human_lesson_messages(
+                deck=deck,
+                current_page=current_page,
+                contexts=contexts,
+                citations=citations,
+                outline=outline,
+                target_chars=target_chars,
+            )
+
+        if not contexts:
+            raise ValueError("当前没有可用课程资料，无法生成数字人讲解文案。")
+
+        response = await self._complete_task("digital_human_script", messages)
+        content = self._extract_message_content(response)
+        display_script = self._clean_digital_human_script(content, citations)
+
+        return {
+            "displayScript": display_script,
+            "citations": [self._citation_to_dict(citation) for citation in citations],
+            "courseId": resolved_course_id,
         }
 
     async def _course_starter_messages(self, course_id: str) -> tuple[list[dict[str, Any]], str]:
@@ -1039,6 +1094,127 @@ class CourseRAGService:
             {"role": "system", "content": self.prompts["mindmap_generation_system"]},
             {"role": "user", "content": prompt},
         ]
+
+    def _build_digital_human_topic_messages(
+        self,
+        *,
+        course_id: str,
+        topic: str,
+        contexts: list[dict[str, Any]],
+        citations: list[Citation],
+        target_chars: int,
+    ) -> list[dict[str, Any]]:
+        prompt = self.prompts["digital_human_topic_user"].format(
+            topic=self._trim_text(topic, 200),
+            target_chars=target_chars,
+            citation_text=self._format_allowed_citations(citations),
+            context_text=self._format_contexts(contexts),
+            current_course_id=course_id,
+        )
+
+        return [
+            {"role": "system", "content": self.prompts["digital_human_script_system"]},
+            {"role": "user", "content": prompt},
+        ]
+
+    def _build_digital_human_lesson_messages(
+        self,
+        *,
+        deck: dict[str, Any],
+        current_page: int,
+        contexts: list[dict[str, Any]],
+        citations: list[Citation],
+        outline: list[dict[str, Any]],
+        target_chars: int,
+    ) -> list[dict[str, Any]]:
+        course_name = str(deck.get("title") or deck.get("courseId") or "当前课程")
+        context_text = "\n\n".join(
+            (
+                f"[{item['sourceId']}] page={item['pageNumber']} label=【{item['label']}】"
+                f"{' heading=' + item['heading'] if item.get('heading') else ''}\n"
+                f"{item['content']}"
+            )
+            for item in contexts
+        )
+        prompt = self.prompts["digital_human_lesson_user"].format(
+            course_name=course_name,
+            current_page=current_page,
+            target_chars=target_chars,
+            outline_text=self._format_course_outline(outline) or "无",
+            citation_text=self._format_allowed_citations(citations),
+            context_text=context_text or "无",
+        )
+
+        return [
+            {"role": "system", "content": self.prompts["digital_human_script_system"]},
+            {"role": "user", "content": prompt},
+        ]
+
+    def _format_allowed_citations(self, citations: list[Citation]) -> str:
+        if not citations:
+            return "无结构化引用。"
+
+        return "\n".join(
+            f"- {citation.label or f'【P{citation.page}】'}："
+            f"{citation.courseName} 第 {citation.page} 页"
+            f"{' / ' + citation.section if citation.section else ''}"
+            for citation in citations
+        )
+
+    def _citations_from_generation_contexts(
+        self,
+        current_course_id: str,
+        contexts: list[dict[str, Any]],
+    ) -> list[Citation]:
+        deck_title = self._safe_course_title(current_course_id)
+        citations: list[Citation] = []
+
+        for item in contexts:
+            page = self._page_start(item.get("pageNumber"))
+            if page is None:
+                continue
+
+            citation_course_id = str(item.get("courseId") or current_course_id)
+            citation = Citation(
+                page=page,
+                courseName=str(item.get("courseTitle") or deck_title),
+                courseId=citation_course_id,
+                label=self._citation_label(current_course_id, citation_course_id, page),
+                source=None,
+                section=item.get("heading"),
+                imageUrl=self._slide_image_url(citation_course_id, page),
+            )
+            citations = self._merge_citations(citations, [citation])
+
+        return citations
+
+    def _clean_digital_human_script(self, value: str, citations: list[Citation]) -> str:
+        script = str(value or "").strip()
+        script = re.sub(r"^```[A-Za-z0-9_-]*\s*", "", script)
+        script = re.sub(r"\s*```$", "", script).strip()
+        script = re.sub(r"^\s*#+\s*", "", script, flags=re.MULTILINE)
+        script = re.sub(r"^\s*[-*]\s*", "", script, flags=re.MULTILINE)
+        script = re.sub(r"\n{2,}", "\n", script).strip()
+
+        allowed_labels = {str(citation.label or "") for citation in citations}
+        script = CITATION_TOKEN_RE.sub(
+            lambda match: match.group(0) if match.group(0) in allowed_labels else "",
+            script,
+        )
+        script = re.sub(r"[ \t]{2,}", " ", script).strip()
+
+        if not script:
+            raise ValueError("数字人讲解文案为空。")
+
+        if citations and not any(label in script for label in allowed_labels):
+            raise ValueError("数字人讲解文案缺少引用标签。")
+
+        return script[:5000]
+
+    def _citation_to_dict(self, citation: Citation) -> dict[str, Any]:
+        data = self._model_dump(citation)
+        data["pageNumber"] = citation.page
+        return data
 
     def _normalize_generated_questions(
         self,
