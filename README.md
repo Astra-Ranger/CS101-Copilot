@@ -12,6 +12,8 @@
 
 CS101_Copilot 是面向大湾区大学计算机科学导论（CS101）课程开发的 AI 智能学习助手。项目以课程内容为核心构建 RAG 学习工作流，整合课程文本、课件、向量数据库、图片理解和数字人讲解，把问答、笔记、练习、重点、导图和讲解视频串成可溯源、可复盘的复习闭环。
 
+>注：为避免暴露 API key 造成经济损失，此仓库无法提供数字人等部分 AI 功能。如需体验可自行接入 API 或在 workshop 现场体验～
+
 ## 设计思想
 
 | 方向 | 说明 |
@@ -114,6 +116,7 @@ backend/digital_human_media/
 ```bash
 python3 -m venv .venv
 .venv/bin/pip install -r backend/requirements.txt
+# 部分依赖安装可能需要配置代理或镜像
 ```
 
 启动服务：
@@ -181,32 +184,16 @@ backend/config/prompts.json
 backend/user_settings.json
 ```
 
-## 本地数据
-
-以下文件不建议提交到公开仓库：
-
-```text
-backend/user_settings.json
-backend/chat_conversations.json
-backend/note_notebooks.json
-backend/digital_human_lectures.json
-backend/digital_human_media/
-```
-
-## 许可证
+## 开源许可
 
 本项目基于 GNU General Public License v2.0 or later 发布。详见 [LICENSE](LICENSE)。
 
 ## 作者
 
-- [Sirui Liang](https://astra-ranger.github.io/)
+- [Sirui Liang](https://astra-ranger.github.io/) 
 - [Bohan Deng](https://bohan.bohandeng102647.workers.dev/)
 - Weinan Guan
 
-## Completed by
-
-[Sirui Liang](https://astra-ranger.github.io/), [Bohan Deng](https://bohan.bohandeng102647.workers.dev/), and Weinan Guan.
-
 ## 致谢
 
-感谢徐志伟老师与李晓明老师为计算机科学教育做出的贡献，赋予了本项目最核心的价值。
+感谢[徐志伟](https://www.gbu.edu.cn/sz_details_g7yU_92/768.html)老师与[李晓明](https://www.gbu.edu.cn/sz_details_g7yU_92/771.html)老师为计算机科学教育做出的贡献，赋予了本项目最核心的价值。
